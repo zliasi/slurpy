@@ -298,12 +298,12 @@ class SearchPathTests(unittest.TestCase):
             with mock.patch.dict(os.environ, {"HOME": tmp}):
                 os.environ.pop(slurpy.CONFIG_PATH_ENV, None)
                 dirs = slurpy.resolve_search_path()
-        self.assertEqual(dirs, (Path(tmp) / "slurpy", Path(tmp) / ".config" / "slurpy"))
+        self.assertEqual(dirs, (Path(tmp) / ".config" / "slurpy", Path(tmp) / "bin"))
 
-    def test_visible_dir_search_path_wins(self) -> None:
+    def test_configured_search_path_wins(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
-            config_dir = Path(tmp) / "slurpy"
-            config_dir.mkdir()
+            config_dir = Path(tmp) / ".config" / "slurpy"
+            config_dir.mkdir(parents=True)
             (config_dir / "slurpy.toml").write_text('search_path = ["/x", "/y"]\n')
             with mock.patch.dict(os.environ, {"HOME": tmp}):
                 os.environ.pop(slurpy.CONFIG_PATH_ENV, None)
@@ -314,6 +314,28 @@ class SearchPathTests(unittest.TestCase):
         with mock.patch.dict(os.environ, {slurpy.CONFIG_PATH_ENV: "/a:/b"}):
             dirs = slurpy.resolve_search_path()
         self.assertEqual(dirs, (Path("/a"), Path("/b")))
+
+    def test_init_custom_dir_writes_pointer(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            with mock.patch.dict(os.environ, {"HOME": tmp}):
+                os.environ.pop(slurpy.CONFIG_PATH_ENV, None)
+                code, _, stderr = run_slurpy(["init", "--dir", f"{tmp}/my-configs"])
+                self.assertEqual(code, 0, stderr)
+                dirs = slurpy.resolve_search_path()
+        self.assertEqual(dirs, (Path(tmp) / "my-configs",))
+
+    def test_flat_toml_in_bin(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            bin_dir = Path(tmp) / "bin"
+            bin_dir.mkdir()
+            (bin_dir / "orca.toml").write_text("")
+            (bin_dir / "slurpy.toml").write_text("")
+            found = slurpy.discover_software([bin_dir])
+            self.assertEqual(found, {"orca": bin_dir / "orca.toml"})
+            self.assertEqual(
+                slurpy.find_software_config("orca", [bin_dir]),
+                bin_dir / "orca.toml",
+            )
 
 
 class DispatchTests(unittest.TestCase):

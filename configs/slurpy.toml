@@ -1,10 +1,10 @@
-# slurpy site configuration. copy to ~/slurpy/slurpy.toml and edit.
+# slurpy site configuration. copy to ~/.config/slurpy/slurpy.toml and edit.
 
-# directories searched for software configs, in order. first match wins.
-# add shared group directories after your personal one, for example:
-# search_path = ["~/slurpy", "/software/mygroup/slurpy"]
-# without this file, both ~/slurpy and ~/.config/slurpy are searched.
-search_path = ["~/slurpy"]
+# directories searched for configs, in order. first match wins. add your
+# own directory or shared group directories, for example:
+# search_path = ["~/my-configs", "~/.config/slurpy", "/software/mygroup/slurpy"]
+# when unset, ~/.config/slurpy and ~/bin are searched.
+# search_path = ["~/.config/slurpy", "~/bin"]
 
 [defaults]
 # partition = "chem"

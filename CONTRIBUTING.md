@@ -7,7 +7,9 @@ engine fixes. Adding support for a new software needs no Python at all.
 
 This is the most useful contribution and works without touching code.
 
-1. Copy `configs/software/example.toml` to `~/slurpy/software/<name>.toml`.
+1. Copy `configs/software/example.toml` to `<name>.toml` in one of your
+   config directories (`slurpy list` shows them; `~/bin/<name>.toml` works
+   too).
 2. Fill in the paths, module loads, and run command for the software.
    Look at your old submit script: everything it exported or loaded goes in
    `[environment].setup`, the line that ran the program becomes

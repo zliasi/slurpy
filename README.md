@@ -12,12 +12,14 @@ Adding new software means adding a config file, not changing code.
 curl -O https://<your-host>/slurpy.py    # or copy it from the repo
 chmod +x slurpy.py
 mv slurpy.py ~/bin/slurpy                # any directory on your PATH
-slurpy init                              # scaffold ~/slurpy/
+slurpy init                              # scaffold ~/.config/slurpy/
 ```
 
-Then copy software configs into `~/slurpy/software/`, either from this
-repo's `configs/software/` or from your group's shared directory, and fill
-in the paths for your cluster.
+Prefer a config folder you can see? `slurpy init --dir ~/my-configs`
+scaffolds it there and slurpy remembers the location. Then copy software
+configs into it (or simply drop `<name>.toml` files into `~/bin`), either
+from this repo's `configs/software/` or from your group's shared directory,
+and fill in the paths for your cluster.
 
 Requires Python 3.11 or newer. No dependencies.
 
@@ -79,17 +81,19 @@ config file.
 | `sgaussian h2o.com` | `slurpy gaussian h2o.com` |
 | `spython script.py` | `slurpy exec script.py --launcher python3` |
 | `sint` | `slurpy int` |
-| editing paths in your bash script | editing `~/slurpy/software/<name>.toml` |
+| editing paths in your bash script | editing `<name>.toml` in your config directory |
 
 ## Configuration
 
 slurpy searches directories for configs in a fixed order and the first match
-wins. By default it looks in `~/slurpy` (easy to find) and then
-`~/.config/slurpy` (fallback). To change the order, or to add a shared group
-directory, set `search_path` in `~/slurpy/slurpy.toml`:
+wins. By default it looks in `~/.config/slurpy` and then `~/bin`, where
+software configs can also sit as plain `<name>.toml` files next to your
+scripts. To use your own directory, either run `slurpy init --dir DIR`
+(slurpy writes a pointer so it finds the location), or set `search_path` in
+`~/.config/slurpy/slurpy.toml`:
 
 ```toml
-search_path = ["~/slurpy", "/software/mygroup/slurpy"]
+search_path = ["~/my-configs", "/software/mygroup/slurpy"]
 ```
 
 Put your personal directory first to override group defaults without forking
@@ -108,8 +112,8 @@ Resource precedence: command-line flags, then the software config's
 
 ### Adding a new software
 
-Copy `configs/software/example.toml` to `~/slurpy/software/<name>.toml` and
-edit. The essentials:
+Copy `configs/software/example.toml` to `<name>.toml` in a config directory
+and edit. The essentials:
 
 ```toml
 [software]

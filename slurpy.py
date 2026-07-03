@@ -8,8 +8,8 @@ only discovers configs, validates input, renders an sbatch script, and
 submits it.
 
 Minimum setup: this file plus one software config, for example
-~/slurpy/software/orca.toml. Run "slurpy init" to scaffold and
-"slurpy list" to see what is available.
+~/.config/slurpy/software/orca.toml or a plain ~/bin/orca.toml. Run
+"slurpy init" to scaffold and "slurpy list" to see what is available.
 """
 
 from __future__ import annotations
@@ -27,9 +27,12 @@ from pathlib import Path
 __version__ = "0.1.0"
 
 CONFIG_PATH_ENV = "SLURPY_CONFIG_PATH"
-# Visible directory first so non-coders can find their configs, hidden
-# XDG-style directory kept as fallback.
-DEFAULT_CONFIG_DIRS = ("~/slurpy", "~/.config/slurpy")
+# Fixed bootstrap location. Users pick any config directory they like with
+# "slurpy init --dir"; a pointer written here makes slurpy find it.
+USER_CONFIG_DIR = "~/.config/slurpy"
+# Searched when no search_path is configured. ~/bin is included because
+# that is where people traditionally keep their per-software submitters.
+DEFAULT_SEARCH_DIRS = (USER_CONFIG_DIR, "~/bin")
 MAX_BACKUP_INDEX = 99
 
 RESERVED_COMMANDS = frozenset(
@@ -71,14 +74,14 @@ usage:
   slurpy int [options]
   slurpy list
   slurpy link [<software> ...] [--dir DIR]
-  slurpy init
+  slurpy init [--dir DIR]
 
 commands:
-  <software>   submit using <config dir>/software/<software>.toml
+  <software>   submit using the <software>.toml config
   int          interactive shell on a compute node (salloc)
   list         show the config search path and available software
   link         create shorthand symlinks (sorca, sgaussian, ...) in ~/bin
-  init         create ~/slurpy/ with commented config templates
+  init         create a config directory (default ~/.config/slurpy)
 
 examples:
   slurpy orca h2o.inp
@@ -207,9 +210,8 @@ def resolve_search_path() -> tuple[Path, ...]:
     Return config directories in precedence order.
 
     The SLURPY_CONFIG_PATH environment variable (colon-separated) wins.
-    Otherwise the search_path key from the first slurpy.toml found in
-    ~/slurpy or ~/.config/slurpy is used, falling back to those two
-    directories themselves.
+    Otherwise the search_path key in ~/.config/slurpy/slurpy.toml is used,
+    falling back to ~/.config/slurpy and ~/bin.
     """
     env_value = os.environ.get(CONFIG_PATH_ENV)
     if env_value:
@@ -217,16 +219,13 @@ def resolve_search_path() -> tuple[Path, ...]:
         if not dirs:
             raise SlurpyError(f"{CONFIG_PATH_ENV} is set but empty")
         return dirs
-    for base in DEFAULT_CONFIG_DIRS:
-        config = Path(base).expanduser() / "slurpy.toml"
-        if not config.is_file():
-            continue
-        data = _load_toml(config)
-        listed = _get_str_list(data, "search_path", "top level", config)
+    user_config = Path(USER_CONFIG_DIR).expanduser() / "slurpy.toml"
+    if user_config.is_file():
+        data = _load_toml(user_config)
+        listed = _get_str_list(data, "search_path", "top level", user_config)
         if listed:
             return tuple(Path(part).expanduser() for part in listed)
-        break
-    return tuple(Path(base).expanduser() for base in DEFAULT_CONFIG_DIRS)
+    return tuple(Path(base).expanduser() for base in DEFAULT_SEARCH_DIRS)
 
 
 def load_site_defaults(search_path: Sequence[Path]) -> SiteDefaults:
@@ -310,10 +309,19 @@ _RESOURCE_INT_KEYS = ("cpus", "memory_gb", "ntasks", "nodes", "throttle")
 
 
 def find_software_config(name: str, search_path: Sequence[Path]) -> Path | None:
+    """
+    Return the config for a software name, or None.
+
+    Each directory is checked for software/<name>.toml first and then a
+    flat <name>.toml, so a plain ~/bin/orca.toml works too.
+    """
     for directory in search_path:
-        candidate = directory / "software" / f"{name}.toml"
-        if candidate.is_file():
-            return candidate
+        for candidate in (
+            directory / "software" / f"{name}.toml",
+            directory / f"{name}.toml",
+        ):
+            if candidate.is_file():
+                return candidate
     return None
 
 
@@ -321,11 +329,14 @@ def discover_software(search_path: Sequence[Path]) -> dict[str, Path]:
     """Map software name to config path. Earlier directories win."""
     found: dict[str, Path] = {}
     for directory in search_path:
-        software_dir = directory / "software"
-        if not software_dir.is_dir():
-            continue
-        for path in sorted(software_dir.glob("*.toml")):
-            found.setdefault(path.stem, path)
+        for toml_dir in (directory / "software", directory):
+            if not toml_dir.is_dir():
+                continue
+            for path in sorted(toml_dir.glob("*.toml")):
+                # slurpy.toml holds site defaults, not a software.
+                if path.name == "slurpy.toml":
+                    continue
+                found.setdefault(path.stem, path)
     return found
 
 
@@ -1024,11 +1035,11 @@ def cmd_link(argv: Sequence[str]) -> int:
 INIT_SLURPY_TOML = """\
 # slurpy site configuration.
 
-# directories searched for software configs, in order. first match wins.
-# add shared group directories after your personal one, for example:
-# search_path = ["~/slurpy", "/software/mygroup/slurpy"]
-# without this file, both ~/slurpy and ~/.config/slurpy are searched.
-search_path = ["~/slurpy"]
+# directories searched for configs, in order. first match wins. add your
+# own directory or shared group directories, for example:
+# search_path = ["~/my-configs", "~/.config/slurpy", "/software/mygroup/slurpy"]
+# when unset, ~/.config/slurpy and ~/bin are searched.
+# search_path = ["~/.config/slurpy", "~/bin"]
 
 [defaults]
 # partition = "chem"
@@ -1110,6 +1121,26 @@ retrieve = []
 """
 
 
+def _write_bootstrap_pointer(chosen_dir: Path) -> None:
+    """Make a custom config directory findable via the bootstrap file."""
+    bootstrap = Path(USER_CONFIG_DIR).expanduser() / "slurpy.toml"
+    if not bootstrap.exists():
+        bootstrap.parent.mkdir(parents=True, exist_ok=True)
+        bootstrap.write_text(
+            "# points slurpy at your chosen config directory.\n"
+            "# edit search_path to change or add locations.\n"
+            f'search_path = ["{chosen_dir}"]\n'
+        )
+        print(f"created: {bootstrap} (points at {chosen_dir})")
+        return
+    data = _load_toml(bootstrap)
+    listed = _get_str_list(data, "search_path", "top level", bootstrap)
+    known = {str(Path(part).expanduser()) for part in listed}
+    if str(chosen_dir) in known:
+        return
+    print(f'note: add "{chosen_dir}" to search_path in {bootstrap}')
+
+
 def cmd_init(argv: Sequence[str]) -> int:
     parser = argparse.ArgumentParser(
         prog="slurpy init",
@@ -1117,17 +1148,11 @@ def cmd_init(argv: Sequence[str]) -> int:
     )
     parser.add_argument(
         "--dir",
-        default=DEFAULT_CONFIG_DIRS[0],
-        help=f"config directory to create (default: {DEFAULT_CONFIG_DIRS[0]})",
+        default=USER_CONFIG_DIR,
+        help=f"config directory to create (default: {USER_CONFIG_DIR})",
     )
     args = parser.parse_args(list(argv))
     base = Path(args.dir).expanduser()
-    if str(base) not in (str(Path(d).expanduser()) for d in DEFAULT_CONFIG_DIRS):
-        print(
-            f"note: {base} is not searched by default. point search_path "
-            f"in {Path(DEFAULT_CONFIG_DIRS[0]).expanduser()}/slurpy.toml "
-            f"or {CONFIG_PATH_ENV} at it"
-        )
     files = {
         base / "slurpy.toml": INIT_SLURPY_TOML,
         base / "software" / "exec.toml": INIT_EXEC_TOML,
@@ -1140,6 +1165,8 @@ def cmd_init(argv: Sequence[str]) -> int:
         path.parent.mkdir(parents=True, exist_ok=True)
         path.write_text(content)
         print(f"created: {path}")
+    if base != Path(USER_CONFIG_DIR).expanduser():
+        _write_bootstrap_pointer(base)
     print(
         "next: edit slurpy.toml, then add software configs under "
         f"{base / 'software'}"
