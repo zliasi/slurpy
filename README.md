@@ -161,17 +161,7 @@ All shipped with placeholder paths, fill in your cluster's locations.
 
 ## Migrating from the old scripts
 
-| old | new |
-| --- | --- |
-| `sorca h2o.inp` | `slurpy orca h2o.inp` (or `sorca h2o.inp` after `slurpy link`) |
-| `sorca -c 8 -m 16 h2o.inp` | `slurpy orca -c 8 -m 16 h2o.inp` |
-| `for f in *.inp; do sorca $f; done` | `slurpy orca *.inp` |
-| `spython script.py` | `slurpy exec script.py --launcher python3` |
-| `sint` | `slurpy int` |
-| editing paths in your bash script | editing `<name>.toml` in a config directory |
-
-`migrate.py` (in the repo) drafts a software config from an old bash
-submit script:
+`migrate.py` drafts a software config from an old bash submit script:
 
 ```
 python3 migrate.py ~/bin/sorca > ~/.config/slurpy/software/orca.toml
