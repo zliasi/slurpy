@@ -1,0 +1,37 @@
+# orca. copy to <config dir>/software/orca.toml and set [paths].
+
+[software]
+extensions = [".inp"]
+
+[resources]
+cpus = 8
+memory_gb = 16
+
+[paths]
+# orca must be started with its full path so its internal mpi launcher
+# can find itself.
+orca_dir = "/path/to/orca"
+openmpi_bin = "/path/to/openmpi/bin"
+openmpi_lib = "/path/to/openmpi/lib"
+
+[environment]
+setup = """
+module purge
+export PATH="{orca_dir}:{openmpi_bin}:$PATH"
+export LD_LIBRARY_PATH="{openmpi_lib}:$LD_LIBRARY_PATH"
+export OMP_NUM_THREADS=1
+export OMPI_MCA_rmaps_base_oversubscribe=1
+"""
+
+[execution]
+# the .out file streams directly into output/, so it can be followed
+# with tail -f while the job runs.
+command = '"{orca_dir}/orca" "{input}" > "{output_dir}/{stem}.out"'
+scratch = true
+archive = true
+retrieve = ["gbw", "xyz"]
+
+# [slurm]
+# nodes whose cpus break the bundled openmpi can be excluded per partition:
+# exclude_file = "/path/to/exclude-list.txt"
+# exclude_partition = "chem"

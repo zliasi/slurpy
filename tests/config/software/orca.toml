@@ -1,0 +1,20 @@
+# fixture orca config for tests.
+
+[software]
+extensions = [".inp"]
+
+[paths]
+orca_dir = "/opt/orca"
+
+[environment]
+setup = """
+module purge
+export PATH="{orca_dir}:$PATH"
+export OMP_NUM_THREADS=1
+"""
+
+[execution]
+command = '"{orca_dir}/orca" "{input}" > "{output_dir}/{stem}.out"'
+scratch = true
+archive = true
+retrieve = ["gbw", "xyz"]

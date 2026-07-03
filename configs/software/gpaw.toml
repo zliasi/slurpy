@@ -1,0 +1,19 @@
+# gpaw. copy to <config dir>/software/gpaw.toml and adjust setup.
+# runs in place (no scratch): results land next to the input script.
+
+[software]
+extensions = [".py"]
+
+[resources]
+ntasks = 8
+
+[environment]
+setup = """
+module purge
+# module load gpaw
+# gpaw hangs without this.
+export OPENBLAS_NUM_THREADS=1
+"""
+
+[execution]
+command = 'mpirun -np "$SLURM_NTASKS" gpaw python -- "{input}"'

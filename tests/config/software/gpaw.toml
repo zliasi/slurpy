@@ -1,0 +1,15 @@
+# fixture gpaw config for tests.
+
+[software]
+extensions = [".py"]
+
+[resources]
+ntasks = 8
+
+[environment]
+setup = """
+export OPENBLAS_NUM_THREADS=1
+"""
+
+[execution]
+command = 'mpirun -np "$SLURM_NTASKS" gpaw python -- "{input}"'

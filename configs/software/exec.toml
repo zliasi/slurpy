@@ -1,0 +1,7 @@
+# generic runner: submits any script with the given launcher.
+# usage: slurpy exec job.sh
+#        slurpy exec analysis.py --launcher python3
+
+[execution]
+command = '{launcher} "{input}"'
+launcher = "bash"

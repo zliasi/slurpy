@@ -1,0 +1,19 @@
+# fixture gaussian config for tests.
+
+[software]
+extensions = [".com", ".gjf"]
+
+[paths]
+g16 = "/opt/g16/g16"
+
+[environment]
+setup = """
+module purge
+export GAUSS_SCRDIR="{scratch}"
+"""
+
+[execution]
+command = '"{g16}" "{input}" > "{output_dir}/{stem}.out"'
+scratch = true
+archive = true
+retrieve = ["chk"]

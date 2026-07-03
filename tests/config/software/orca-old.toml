@@ -1,0 +1,16 @@
+# fixture variant config: exercises --variant and node exclusion.
+
+[software]
+extensions = [".inp"]
+
+[paths]
+orca_dir = "/opt/orca-old"
+
+[execution]
+command = '"{orca_dir}/orca" "{input}" > "{output_dir}/{stem}.out"'
+scratch = true
+archive = true
+
+[slurm]
+exclude = "node[001-004]"
+exclude_partition = "chem"

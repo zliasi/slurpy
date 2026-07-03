@@ -1,0 +1,53 @@
+# reference for writing a software config. copy to <name>.toml and edit.
+# every available key is shown. optional ones are commented out.
+
+[software]
+# accepted input extensions. empty or omitted means accept any file.
+extensions = [".in"]
+
+[resources]
+# defaults for this software, override the site defaults in slurpy.toml.
+# command-line flags override both.
+cpus = 1
+memory_gb = 2
+# ntasks = 1
+# nodes = 1
+# throttle = 5
+# partition = "chem"
+
+[paths]
+# free-form values available as {name} in setup and command.
+my_program = "/path/to/program"
+
+[environment]
+# emitted verbatim into the job script. the job starts with a clean
+# environment (--export=NONE), so load modules and export variables here.
+setup = """
+module purge
+export OMP_NUM_THREADS={cpus}
+"""
+
+[execution]
+# the command that runs the job. available placeholders:
+#   {input}      the input file (inside scratch when scratch = true)
+#   {input_path} the input path as given at submission
+#   {stem}       input filename without its extension
+#   {output_dir} the output directory
+#   {scratch}    scratch directory (only when scratch = true)
+#   {cpus} {ntasks} {nodes} {memory_gb} {launcher}
+#   plus every key from [paths]
+command = '"{my_program}" "{input}" > "{output_dir}/{stem}.out"'
+# run inside a per-job scratch directory and clean it up afterwards.
+scratch = false
+# tar the scratch directory into output/<stem>.tar.xz when done.
+archive = false
+# file extensions copied back from scratch to output/.
+retrieve = []
+
+# [slurm]
+# exclude nodes, either inline or from a file with one node per line.
+# applied only when the job partition equals exclude_partition, or always
+# when exclude_partition is unset.
+# exclude = "node001,node002"
+# exclude_file = "/path/to/exclude-list.txt"
+# exclude_partition = "chem"

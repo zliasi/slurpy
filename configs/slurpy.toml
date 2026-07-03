@@ -1,0 +1,18 @@
+# slurpy site configuration. copy to ~/.config/slurpy/slurpy.toml and edit.
+
+# directories searched for software configs, in order. first match wins.
+# add shared group directories after your personal one, for example:
+# search_path = ["~/.config/slurpy", "/software/mygroup/slurpy"]
+search_path = ["~/.config/slurpy"]
+
+[defaults]
+# partition = "chem"
+cpus = 1
+memory_gb = 2
+ntasks = 1
+nodes = 1
+throttle = 5
+scratch_base = "/scratch"
+# reject jobs above these limits before they reach slurm.
+# max_cpus = 64
+# max_memory_gb = 500

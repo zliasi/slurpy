@@ -1,0 +1,5 @@
+# fixture site config for tests. deterministic values only.
+search_path = ["~/.config/slurpy"]
+
+[defaults]
+partition = "chem"

@@ -1,0 +1,24 @@
+# gaussian 16. copy to <config dir>/software/gaussian.toml and set [paths].
+
+[software]
+extensions = [".com", ".gjf"]
+
+[resources]
+cpus = 8
+memory_gb = 16
+
+[paths]
+g16 = "/path/to/g16/g16"
+
+[environment]
+# gaussian writes its temporary files where GAUSS_SCRDIR points.
+setup = """
+module purge
+export GAUSS_SCRDIR="{scratch}"
+"""
+
+[execution]
+command = '"{g16}" "{input}" > "{output_dir}/{stem}.out"'
+scratch = true
+archive = true
+retrieve = ["chk"]

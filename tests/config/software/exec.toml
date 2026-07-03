@@ -1,0 +1,5 @@
+# fixture exec config for tests.
+
+[execution]
+command = '{launcher} "{input}"'
+launcher = "bash"
