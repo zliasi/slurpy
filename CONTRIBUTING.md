@@ -1,6 +1,6 @@
 # contributing
 
-Contributions welcome: new software configs, better error messages, docs, or
+Contributions are welcome: new software configs, better error messages, docs, or
 engine fixes. Adding support for a new software needs no Python at all.
 
 ## Adding or improving a software config
@@ -13,21 +13,22 @@ This is the most useful contribution and works without touching code.
 2. Fill in the paths, module loads, and run command for the software.
    Look at your old submit script: everything it exported or loaded goes in
    `[environment].setup`, the line that ran the program becomes
-   `[execution].command`.
+   `[execution].command`. `migrate.py` drafts this for you from the old
+   script: `python3 migrate.py ~/bin/s<name> > <name>.toml`.
 3. Test without submitting:
 
    ```
-   slurpy <name> --dry-run someinput.xyz
+   slurpy <name> --dry-run input.xyz
    ```
 
    Read the printed script. Compare it against a job script that you know
    works.
-4. Submit a small real job and check the results land in `output/`.
+4. Submit a small real job and check the results.
 5. When it works, replace the site-specific paths with `/path/to/...`
    placeholders and a short comment, copy the file into `configs/software/`
    in this repo, and open a pull request (or send the file to the
    maintainer). Keep your working copy with real paths in your own config
-   directory or the group's shared one.
+   directory.
 
 ## Changing the engine (slurpy.py)
 
