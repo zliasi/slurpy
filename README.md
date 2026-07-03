@@ -1,28 +1,35 @@
 # slurpy
 
-Submit computational chemistry jobs to Slurm without knowing Slurm.
+Unified Slurm handler written in Python.
 
 One dependency-free Python file wrapping `sbatch`. All software-specific
 knowledge (executables, module loads, scratch handling, retrieved files)
 lives in small TOML configs, so adding new software means adding a config
-file, not changing code. Handles scratch setup, output retrieval,
-archiving, job arrays, and output backups.
+file, not changing or duplicating code. Handles scratch setup, output
+retrieval, archiving, job arrays, and output backups.
 
 Requires Python 3.11 or newer.
 
 ## Installation
 
 ```
-cp slurpy.py ~/bin/slurpy      # any directory on your PATH
+git clone https://github.com/zliasi/slurpy
+cp slurpy/slurpy.py ~/bin/slurpy    # any directory on your PATH
 chmod +x ~/bin/slurpy
-slurpy init                    # scaffold ~/.config/slurpy/
-slurpy link                    # optional: create sorca, sgaussian, ...
+slurpy init                         # scaffold ~/.config/slurpy/
+slurpy link                         # optional: create sorca, sgaussian, ...
 ```
 
-Prefer a visible config folder? `slurpy init --dir ~/my-configs` scaffolds
+Or grab just the one required file:
+
+```
+curl -LO https://raw.githubusercontent.com/zliasi/slurpy/main/slurpy.py
+```
+
+Prefer a different config folder? `slurpy init --dir ~/my-configs` scaffolds
 it there and slurpy remembers the location. Then copy software configs
-from this repo's `configs/software/` (or your group's shared directory)
-into a config directory and fill in the paths for your cluster.
+from this repo's `configs/software/` into a config directory and fill in the
+paths for your cluster.
 
 ## Usage
 
@@ -42,15 +49,16 @@ sorca -c 8 -m 16 -t 1-00:00:00 h2o.inp
 ```
 
 Passing multiple inputs submits one throttled job array, never separate
-jobs. Results land in `output/`; existing results are moved to
-`output/backup/` (`.bck01` ... `.bck99`) before each submission, never
-overwritten. `--dry-run` prints the generated script instead of
+jobs. For loops throttle Slurm, affecting you and everyone else on the 
+cluster.  Results land in `output/` by default, existing results are 
+moved to `output/backup/` (`.bck01` ... `.bck99`) before each submission, 
+never overwritten. `--dry-run` prints the generated script instead of
 submitting. Variants like `slurpy orca-dev input.inp` (or
 `--variant dev`) use `orca-dev.toml`.
 
 ## Flags
 
-Run any software with `-h` for the authoritative list.
+Use `-h` for an overview of flags 
 
 ```
 -c, --cpus INT              cpu cores per task          (default: 1)
@@ -149,7 +157,7 @@ No scratch.
 **exec** - runs any script via a launcher (`bash` by default, override
 with `--launcher python3`). No scratch.
 
-All shipped with placeholder paths; fill in your cluster's locations.
+All shipped with placeholder paths, fill in your cluster's locations.
 
 ## Migrating from the old scripts
 
@@ -162,11 +170,17 @@ All shipped with placeholder paths; fill in your cluster's locations.
 | `sint` | `slurpy int` |
 | editing paths in your bash script | editing `<name>.toml` in a config directory |
 
-## Scope and stability
+`migrate.py` (in the repo) drafts a software config from an old bash
+submit script:
 
-slurpy submits jobs. It does not parse outputs, monitor queues, or manage
-workflows. The command-line interface is stable: existing flags will not
-change, new features arrive as new flags.
+```
+python3 migrate.py ~/bin/sorca > ~/.config/slurpy/software/orca.toml
+```
+
+Best effort: it extracts paths, module loads, resource defaults, the run
+command, and scratch/archive behavior. Review every value, resolve the
+TODO markers, then check the result with `slurpy orca --dry-run input.inp`
+before trusting it.
 
 ## Development
 
