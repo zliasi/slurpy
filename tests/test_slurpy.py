@@ -292,6 +292,30 @@ class ManifestTests(TempCwdTestCase):
         self.assertEqual(path.stat().st_mode & 0o777, 0o600)
 
 
+class SearchPathTests(unittest.TestCase):
+    def test_default_dirs(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            with mock.patch.dict(os.environ, {"HOME": tmp}):
+                os.environ.pop(slurpy.CONFIG_PATH_ENV, None)
+                dirs = slurpy.resolve_search_path()
+        self.assertEqual(dirs, (Path(tmp) / "slurpy", Path(tmp) / ".config" / "slurpy"))
+
+    def test_visible_dir_search_path_wins(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            config_dir = Path(tmp) / "slurpy"
+            config_dir.mkdir()
+            (config_dir / "slurpy.toml").write_text('search_path = ["/x", "/y"]\n')
+            with mock.patch.dict(os.environ, {"HOME": tmp}):
+                os.environ.pop(slurpy.CONFIG_PATH_ENV, None)
+                dirs = slurpy.resolve_search_path()
+        self.assertEqual(dirs, (Path("/x"), Path("/y")))
+
+    def test_env_var_wins(self) -> None:
+        with mock.patch.dict(os.environ, {slurpy.CONFIG_PATH_ENV: "/a:/b"}):
+            dirs = slurpy.resolve_search_path()
+        self.assertEqual(dirs, (Path("/a"), Path("/b")))
+
+
 class DispatchTests(unittest.TestCase):
     def test_symlink_dispatch(self) -> None:
         cases = {

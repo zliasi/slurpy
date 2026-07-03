@@ -12,12 +12,12 @@ Adding new software means adding a config file, not changing code.
 curl -O https://<your-host>/slurpy.py    # or copy it from the repo
 chmod +x slurpy.py
 mv slurpy.py ~/bin/slurpy                # any directory on your PATH
-slurpy init                              # scaffold ~/.config/slurpy/
+slurpy init                              # scaffold ~/slurpy/
 ```
 
-Then copy software configs into `~/.config/slurpy/software/`, either from
-this repo's `configs/software/` or from your group's shared directory, and
-fill in the paths for your cluster.
+Then copy software configs into `~/slurpy/software/`, either from this
+repo's `configs/software/` or from your group's shared directory, and fill
+in the paths for your cluster.
 
 Requires Python 3.11 or newer. No dependencies.
 
@@ -79,20 +79,23 @@ config file.
 | `sgaussian h2o.com` | `slurpy gaussian h2o.com` |
 | `spython script.py` | `slurpy exec script.py --launcher python3` |
 | `sint` | `slurpy int` |
-| editing paths in your bash script | editing `~/.config/slurpy/software/<name>.toml` |
+| editing paths in your bash script | editing `~/slurpy/software/<name>.toml` |
 
 ## Configuration
 
 slurpy searches directories for configs in a fixed order and the first match
-wins. The order is set by `search_path` in `~/.config/slurpy/slurpy.toml`:
+wins. By default it looks in `~/slurpy` (easy to find) and then
+`~/.config/slurpy` (fallback). To change the order, or to add a shared group
+directory, set `search_path` in `~/slurpy/slurpy.toml`:
 
 ```toml
-search_path = ["~/.config/slurpy", "/software/mygroup/slurpy"]
+search_path = ["~/slurpy", "/software/mygroup/slurpy"]
 ```
 
 Put your personal directory first to override group defaults without forking
 anything. The `SLURPY_CONFIG_PATH` environment variable (colon-separated)
-overrides the whole list. Each directory can contain:
+overrides the whole list, and `slurpy init --dir DIR` scaffolds a custom
+location. Each directory can contain:
 
 ```
 slurpy.toml            site defaults: partition, cpus, memory, throttle, ...
@@ -105,8 +108,8 @@ Resource precedence: command-line flags, then the software config's
 
 ### Adding a new software
 
-Copy `configs/software/example.toml` to `software/<name>.toml` in a config
-directory and edit. The essentials:
+Copy `configs/software/example.toml` to `~/slurpy/software/<name>.toml` and
+edit. The essentials:
 
 ```toml
 [software]
@@ -145,7 +148,8 @@ make check       # black, ruff, mypy --strict (if installed)
 ```
 
 The golden files in `tests/expected/` are the specification of the generated
-sbatch scripts. Review their diff whenever the renderer changes.
+sbatch scripts. Review their diff whenever the renderer changes. See
+CONTRIBUTING.md for how to add software configs and change the engine.
 
 ## License
 
