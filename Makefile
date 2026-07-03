@@ -7,6 +7,6 @@ goldens:
 	python3 tests/update-goldens.py
 
 check:
-	black --check slurpy.py tests/test_slurpy.py
-	ruff check slurpy.py tests/test_slurpy.py
+	black --check slurpy.py tests/test_slurpy.py tests/update-goldens.py
+	ruff check slurpy.py tests/test_slurpy.py tests/update-goldens.py
 	mypy --strict slurpy.py

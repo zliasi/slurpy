@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import argparse
 import contextlib
 import io
 import os
@@ -172,6 +173,19 @@ class ValidationTests(TempCwdTestCase):
         for value in invalid:
             self.assertIsNone(slurpy.TIME_LIMIT_RE.fullmatch(value), value)
 
+    def test_invalid_characters(self) -> None:
+        code, _, stderr = run_slurpy(["orca", "h2$o.inp", "--dry-run"])
+        self.assertEqual(code, 1)
+        self.assertIn("unsupported characters", stderr)
+
+    def test_duplicate_stem(self) -> None:
+        Path("a").mkdir()
+        Path("b").mkdir()
+        self.touch("a/x.inp", "b/x.inp")
+        code, _, stderr = run_slurpy(["orca", "a/x.inp", "b/x.inp", "--dry-run"])
+        self.assertEqual(code, 1)
+        self.assertIn("both write results", stderr)
+
     def test_max_array_size(self) -> None:
         config = Path("localconfig")
         (config / "software").mkdir(parents=True)
@@ -236,6 +250,12 @@ class ConfigTests(TempCwdTestCase):
     def test_unknown_placeholder(self) -> None:
         stderr = self.run_bad("[execution]\ncommand = 'run {typo}'\n")
         self.assertIn('unknown placeholder "{typo}"', stderr)
+
+    def test_retrieve_entry_validated(self) -> None:
+        stderr = self.run_bad(
+            "[execution]\ncommand = 'x'\nscratch = true\nretrieve = ['g bw']\n"
+        )
+        self.assertIn("retrieve entry", stderr)
 
     def test_site_layering_first_dir_wins(self) -> None:
         high = Path("high")
@@ -336,6 +356,134 @@ class SearchPathTests(unittest.TestCase):
                 slurpy.find_software_config("orca", [bin_dir]),
                 bin_dir / "orca.toml",
             )
+
+
+class InitTests(TempCwdTestCase):
+    def _run_in_home(self, argv: list[str]) -> tuple[int, str, str]:
+        with mock.patch.dict(os.environ):
+            os.environ.pop(slurpy.CONFIG_PATH_ENV, None)
+            os.environ["HOME"] = os.getcwd()
+            return run_slurpy(argv)
+
+    def test_relative_dir_pointer_is_absolute(self) -> None:
+        code, _, stderr = self._run_in_home(["init", "--dir", "my-configs"])
+        self.assertEqual(code, 0, stderr)
+        bootstrap = Path(".config/slurpy/slurpy.toml")
+        self.assertIn(str(Path.cwd() / "my-configs"), bootstrap.read_text())
+
+    def test_pointer_note_when_bootstrap_exists(self) -> None:
+        boot_dir = Path(".config/slurpy")
+        boot_dir.mkdir(parents=True)
+        (boot_dir / "slurpy.toml").write_text('search_path = ["/x"]\n')
+        code, stdout, stderr = self._run_in_home(["init", "--dir", "other"])
+        self.assertEqual(code, 0, stderr)
+        self.assertIn(str(Path.cwd() / "other"), stdout)
+        self.assertEqual(
+            (boot_dir / "slurpy.toml").read_text(), 'search_path = ["/x"]\n'
+        )
+
+
+class LinkTests(TempCwdTestCase):
+    def test_link_creates_symlinks_and_skips_reserved(self) -> None:
+        config = Path("cfg")
+        (config / "software").mkdir(parents=True)
+        (config / "software" / "orca.toml").write_text("")
+        (config / "software" / "list.toml").write_text("")
+        with mock.patch.dict(os.environ, {slurpy.CONFIG_PATH_ENV: str(config)}):
+            code, _, stderr = run_slurpy(["link", "--dir", "bin"])
+        self.assertEqual(code, 0, stderr)
+        bin_dir = Path("bin")
+        self.assertTrue((bin_dir / "sorca").is_symlink())
+        self.assertTrue((bin_dir / "sint").is_symlink())
+        self.assertFalse((bin_dir / "slist").exists())
+        self.assertEqual((bin_dir / "sorca").resolve(), Path(slurpy.__file__).resolve())
+
+    def test_list_marks_shadowed_config(self) -> None:
+        config = Path("cfg")
+        (config / "software").mkdir(parents=True)
+        (config / "software" / "list.toml").write_text("")
+        with mock.patch.dict(os.environ, {slurpy.CONFIG_PATH_ENV: str(config)}):
+            code, stdout, _ = run_slurpy(["list"])
+        self.assertEqual(code, 0)
+        self.assertIn("shadowed by the built-in command", stdout)
+
+
+class SubmitTests(TempCwdTestCase):
+    def _install_fake_sbatch(self, script: str) -> None:
+        bin_dir = Path("fakebin")
+        bin_dir.mkdir()
+        sbatch = bin_dir / "sbatch"
+        sbatch.write_text(script)
+        sbatch.chmod(0o755)
+        patcher = mock.patch.dict(
+            os.environ, {"PATH": f"{bin_dir.resolve()}:{os.environ['PATH']}"}
+        )
+        patcher.start()
+        self.addCleanup(patcher.stop)
+
+    def test_array_submission_end_to_end(self) -> None:
+        self._install_fake_sbatch(
+            "#!/bin/bash\ncat > submitted.slurm\necho 'Submitted batch job 777'\n"
+        )
+        self.touch("a.inp", "b.inp")
+        Path("output").mkdir()
+        Path("output/a.out").write_text("old")
+        code, stdout, stderr = run_slurpy(["orca", "a.inp", "b.inp"])
+        self.assertEqual(code, 0, stderr)
+        self.assertIn("submitted array job 777", stdout)
+        self.assertIn("backup:", stdout)
+        self.assertEqual(Path(".a.manifest").read_text(), "a.inp\nb.inp\n")
+        self.assertTrue(Path("output/backup/a.out.bck01").is_file())
+        self.assertTrue(Path("submitted.slurm").read_text().startswith("#!/bin/bash"))
+
+    def test_sbatch_failure_reported(self) -> None:
+        self._install_fake_sbatch(
+            "#!/bin/bash\necho 'sbatch: error: boom' >&2\nexit 1\n"
+        )
+        self.touch("a.inp")
+        code, _, stderr = run_slurpy(["orca", "a.inp"])
+        self.assertEqual(code, 1)
+        self.assertIn("sbatch failed", stderr)
+        self.assertIn("boom", stderr)
+
+    def test_output_path_collision_reported(self) -> None:
+        self.touch("a.inp")
+        # a file named output blocks the output directory.
+        Path("output").write_text("")
+        code, _, stderr = run_slurpy(["orca", "a.inp"])
+        self.assertEqual(code, 1)
+        self.assertIn("slurpy: error", stderr)
+
+
+class SallocTests(unittest.TestCase):
+    def test_build_salloc_command(self) -> None:
+        args = argparse.Namespace(
+            cpus=4,
+            memory=8,
+            nodes=None,
+            ntasks=None,
+            time="2:00:00",
+            partition=None,
+        )
+        site = slurpy.SiteDefaults(partition="chem")
+        command = slurpy.build_salloc_command(args, site, "/bin/zsh")
+        self.assertEqual(
+            command,
+            [
+                "salloc",
+                "--nodes=1",
+                "--ntasks=1",
+                "--cpus-per-task=4",
+                "--mem=8gb",
+                "--partition=chem",
+                "--time=2:00:00",
+                "srun",
+                "--interactive",
+                "--preserve-env",
+                "--pty",
+                "/bin/zsh",
+            ],
+        )
 
 
 class DispatchTests(unittest.TestCase):

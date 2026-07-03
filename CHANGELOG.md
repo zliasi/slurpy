@@ -10,4 +10,6 @@
 - per-config node exclusion, optionally limited to one partition
 - output backups counting up to .bck99
 - interactive mode (slurpy int)
-- init, list, link commands
+- init, list, link commands with shorthand symlinks (sorca, ...)
+- config location chooseable with init --dir, remembered via a pointer
+- flat <name>.toml configs found in ~/bin and any search directory

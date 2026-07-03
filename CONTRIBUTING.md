@@ -78,6 +78,17 @@ Code style follows the repository conventions: Black formatting, strict
 typing, comments explain why rather than what, no emojis, no decorative
 lines.
 
+## Design decisions
+
+- Generated scripts use `#!/bin/bash` rather than `#!/usr/bin/env bash`:
+  it is the sbatch convention, and env lookup on compute nodes is less
+  predictable.
+- Config values (`command`, `setup`, `launcher`) are inserted into the job
+  script unescaped. The trust boundary is the user's own config files,
+  exactly as with the bash scripts slurpy replaces.
+- One file is a hard requirement so users can install by copying; internal
+  sections keep responsibilities separate instead of modules.
+
 ## Commits
 
 One change per commit. Message is a single short lowercase imperative

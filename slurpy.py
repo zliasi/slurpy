@@ -15,12 +15,14 @@ Minimum setup: this file plus one software config, for example
 from __future__ import annotations
 
 import argparse
+import fcntl
 import os
 import re
 import subprocess
 import sys
 import tomllib
-from collections.abc import Mapping, Sequence
+from collections.abc import Iterator, Mapping, Sequence
+from contextlib import contextmanager
 from dataclasses import dataclass
 from pathlib import Path
 
@@ -34,7 +36,10 @@ USER_CONFIG_DIR = "~/.config/slurpy"
 # that is where people traditionally keep their per-software submitters.
 DEFAULT_SEARCH_DIRS = (USER_CONFIG_DIR, "~/bin")
 MAX_BACKUP_INDEX = 99
+SBATCH_TIMEOUT_SECONDS = 60
 
+# Built-in commands. A software config with one of these names can never be
+# submitted, so list and link point that out.
 RESERVED_COMMANDS = frozenset(
     {"help", "init", "int", "interactive", "link", "list", "version"}
 )
@@ -42,6 +47,10 @@ RESERVED_COMMANDS = frozenset(
 # Slurm time formats: MM, MM:SS, HH:MM:SS, D-HH, D-HH:MM, D-HH:MM:SS.
 TIME_LIMIT_RE = re.compile(r"^\d+(-\d{1,2})?(:\d{2})?(:\d{2})?$")
 SOFTWARE_NAME_RE = re.compile(r"^[a-z0-9][a-z0-9._-]*$")
+# Characters safe to embed in the generated script and slurm directives.
+INPUT_NAME_RE = re.compile(r"^[A-Za-z0-9._+/-]+$")
+JOB_NAME_RE = re.compile(r"^[A-Za-z0-9._+-]+$")
+RETRIEVE_RE = re.compile(r"^[A-Za-z0-9._-]+$")
 # Lowercase {name} placeholders. ${NAME} shell expansions pass through.
 PLACEHOLDER_RE = re.compile(r"(?<!\$)\{([a-z][a-z0-9_]*)\}")
 
@@ -368,6 +377,13 @@ def parse_software_config(path: Path, name: str) -> SoftwareConfig:
     scratch = _get_bool(execution, "scratch", "[execution]", path, False)
     archive = _get_bool(execution, "archive", "[execution]", path, False)
     retrieve = _get_str_list(execution, "retrieve", "[execution]", path)
+    for extension in retrieve:
+        if not RETRIEVE_RE.fullmatch(extension):
+            raise SlurpyError(
+                f'retrieve entry "{extension}" in [execution] of {path} is '
+                "not a plain file extension. use letters, digits, dots, "
+                "dashes"
+            )
     launcher = _get_str(execution, "launcher", "[execution]", path)
     if archive and not scratch:
         raise SlurpyError(
@@ -625,13 +641,14 @@ def render_script(spec: JobSpec, software: SoftwareConfig, site: SiteDefaults) -
 def validate_inputs(
     raw_inputs: Sequence[str], software: SoftwareConfig
 ) -> tuple[str, ...]:
-    """Check that every input exists and matches the expected extension."""
+    """Check that every input exists, matches the extension, and is safe."""
     seen: set[str] = set()
+    stem_sources: dict[str, str] = {}
     for text in raw_inputs:
-        if re.search(r"\s", text):
+        if not INPUT_NAME_RE.fullmatch(text):
             raise SlurpyError(
-                f'input "{text}" contains whitespace. rename the file, '
-                "slurm scripts cannot handle it safely"
+                f'input "{text}" contains unsupported characters. rename '
+                "the file using letters, digits, dots, dashes, underscores"
             )
         path = Path(text)
         if not path.is_file():
@@ -652,6 +669,14 @@ def validate_inputs(
                 f'input "{text}" given more than once. check the file list'
             )
         seen.add(text)
+        stem = input_stem(text, software)
+        other = stem_sources.get(stem)
+        if other is not None:
+            raise SlurpyError(
+                f'"{text}" and "{other}" would both write results named '
+                f'"{stem}". rename one of them'
+            )
+        stem_sources[stem] = text
     return tuple(raw_inputs)
 
 
@@ -738,10 +763,10 @@ def resolve_spec(
 
     stems = tuple(input_stem(text, software) for text in inputs)
     job_name = args.job_name if args.job_name else stems[0]
-    if re.search(r"[\s/]", job_name):
+    if not JOB_NAME_RE.fullmatch(job_name):
         raise SlurpyError(
-            f'job name "{job_name}" contains whitespace or "/". pass a '
-            "plain name with --job-name"
+            f'job name "{job_name}" contains unsupported characters. pass '
+            "a plain name with --job-name"
         )
 
     return JobSpec(
@@ -806,11 +831,17 @@ def submit_script(script: str) -> str:
             text=True,
             capture_output=True,
             check=False,
+            timeout=SBATCH_TIMEOUT_SECONDS,
         )
     except FileNotFoundError as error:
         raise SlurpyError(
             "sbatch not found. slurpy must run on a machine with slurm, "
             "usually the cluster login node"
+        ) from error
+    except subprocess.TimeoutExpired as error:
+        raise SlurpyError(
+            f"sbatch did not respond within {SBATCH_TIMEOUT_SECONDS} "
+            "seconds. check the scheduler and try again"
         ) from error
     if result.returncode != 0:
         detail = result.stderr.strip() or result.stdout.strip()
@@ -871,7 +902,10 @@ def build_submit_parser(software_name: str) -> argparse.ArgumentParser:
 
 def _unknown_software_error(name: str, search_path: Sequence[Path]) -> SlurpyError:
     discovered = discover_software(search_path)
-    searched = ", ".join(str(d / "software") for d in search_path)
+    searched = (
+        ", ".join(str(d) for d in search_path)
+        + " (software/ subdirectories and flat .toml files)"
+    )
     if discovered:
         return SlurpyError(
             f'unknown software "{name}". available: '
@@ -883,6 +917,22 @@ def _unknown_software_error(name: str, search_path: Sequence[Path]) -> SlurpyErr
         f'searched: {searched}. run "slurpy init" to scaffold, then copy '
         "configs from the slurpy repo or your group's shared directory"
     )
+
+
+@contextmanager
+def _submission_lock(output_dir: Path) -> Iterator[None]:
+    """
+    Serialize concurrent submissions from one directory.
+
+    Prevents backup numbering and manifest writes from racing.
+    """
+    lock_path = output_dir / ".slurpy.lock"
+    with lock_path.open("w") as handle:
+        fcntl.flock(handle, fcntl.LOCK_EX)
+        try:
+            yield
+        finally:
+            fcntl.flock(handle, fcntl.LOCK_UN)
 
 
 def cmd_submit(software_name: str, argv: Sequence[str]) -> int:
@@ -910,10 +960,11 @@ def cmd_submit(software_name: str, argv: Sequence[str]) -> int:
 
     output_dir = Path("output")
     output_dir.mkdir(exist_ok=True)
-    backup_existing_outputs(output_dir, spec.stems)
-    if spec.array:
-        write_manifest(Path(manifest_name(spec.job_name)), spec.inputs)
-    job_id = submit_script(script)
+    with _submission_lock(output_dir):
+        backup_existing_outputs(output_dir, spec.stems)
+        if spec.array:
+            write_manifest(Path(manifest_name(spec.job_name)), spec.inputs)
+        job_id = submit_script(script)
     if spec.array:
         print(
             f"submitted array job {job_id} ({spec.job_name}, "
@@ -922,6 +973,26 @@ def cmd_submit(software_name: str, argv: Sequence[str]) -> int:
     else:
         print(f"submitted job {job_id} ({spec.job_name})")
     return 0
+
+
+def build_salloc_command(
+    args: argparse.Namespace, site: SiteDefaults, shell: str
+) -> list[str]:
+    """Build the salloc command line for an interactive session."""
+    command = [
+        "salloc",
+        f"--nodes={args.nodes or site.nodes}",
+        f"--ntasks={args.ntasks or site.ntasks}",
+        f"--cpus-per-task={args.cpus or site.cpus}",
+        f"--mem={args.memory or site.memory_gb}gb",
+    ]
+    partition = args.partition or site.partition
+    if partition:
+        command.append(f"--partition={partition}")
+    if args.time:
+        command.append(f"--time={args.time}")
+    command += ["srun", "--interactive", "--preserve-env", "--pty", shell]
+    return command
 
 
 def cmd_interactive(argv: Sequence[str]) -> int:
@@ -941,20 +1012,8 @@ def cmd_interactive(argv: Sequence[str]) -> int:
             f'invalid --time "{args.time}". use D-HH:MM:SS, HH:MM:SS, or MM'
         )
     site = load_site_defaults(resolve_search_path())
-    command = [
-        "salloc",
-        f"--nodes={args.nodes or site.nodes}",
-        f"--ntasks={args.ntasks or site.ntasks}",
-        f"--cpus-per-task={args.cpus or site.cpus}",
-        f"--mem={args.memory or site.memory_gb}gb",
-    ]
-    partition = args.partition or site.partition
-    if partition:
-        command.append(f"--partition={partition}")
-    if args.time:
-        command.append(f"--time={args.time}")
     shell = os.environ.get("SHELL", "/bin/bash")
-    command += ["srun", "--interactive", "--preserve-env", "--pty", shell]
+    command = build_salloc_command(args, site, shell)
     print(" ".join(command))
     try:
         os.execvp(command[0], command)
@@ -983,7 +1042,10 @@ def cmd_list() -> int:
     print("available software:")
     width = max(len(name) for name in discovered)
     for name in sorted(discovered):
-        print(f"  {name:<{width}}  {discovered[name]}")
+        note = ""
+        if name in RESERVED_COMMANDS:
+            note = "  (shadowed by the built-in command, rename the file)"
+        print(f"  {name:<{width}}  {discovered[name]}{note}")
     return 0
 
 
@@ -1001,7 +1063,12 @@ def cmd_link(argv: Sequence[str]) -> int:
     args = parser.parse_args(list(argv))
     search_path = resolve_search_path()
     discovered = discover_software(search_path)
-    names = list(args.software) if args.software else sorted(discovered) + ["int"]
+    if args.software:
+        names = list(args.software)
+    else:
+        # a reserved-named config can never be dispatched, so do not link it.
+        names = sorted(n for n in discovered if n not in RESERVED_COMMANDS)
+        names.append("int")
     if not names:
         raise SlurpyError(
             'no software configs found to link. run "slurpy list" to see '
@@ -1012,6 +1079,8 @@ def cmd_link(argv: Sequence[str]) -> int:
             raise _unknown_software_error(name, search_path)
     target = Path(__file__).resolve()
     directory = Path(args.dir).expanduser()
+    if not directory.is_absolute():
+        directory = Path.cwd() / directory
     directory.mkdir(parents=True, exist_ok=True)
     for name in names:
         link = directory / f"s{name}"
@@ -1026,7 +1095,11 @@ def cmd_link(argv: Sequence[str]) -> int:
             raise SlurpyError(f"{link} already exists. remove it first")
         link.symlink_to(target)
         print(f"created: {link} -> {target}")
-    path_dirs = os.environ.get("PATH", "").split(":")
+    path_dirs = {
+        str(Path(part).expanduser())
+        for part in os.environ.get("PATH", "").split(":")
+        if part
+    }
     if str(directory) not in path_dirs:
         print(f"note: {directory} is not on your PATH")
     return 0
@@ -1153,6 +1226,9 @@ def cmd_init(argv: Sequence[str]) -> int:
     )
     args = parser.parse_args(list(argv))
     base = Path(args.dir).expanduser()
+    # the bootstrap pointer must survive a change of working directory.
+    if not base.is_absolute():
+        base = Path.cwd() / base
     files = {
         base / "slurpy.toml": INIT_SLURPY_TOML,
         base / "software" / "exec.toml": INIT_EXEC_TOML,
@@ -1185,7 +1261,7 @@ def _command_from_program_name(program: str) -> str:
 def split_command(argv: Sequence[str]) -> tuple[str | None, list[str]]:
     """Resolve the command from argv[0] (symlink) or argv[1]."""
     program = Path(argv[0]).name if argv else "slurpy"
-    if program not in ("slurpy", "slurpy.py") and not program.startswith("python"):
+    if program not in ("slurpy", "slurpy.py"):
         return _command_from_program_name(program), list(argv[1:])
     if len(argv) < 2:
         return None, []
@@ -1215,6 +1291,11 @@ def main(argv: Sequence[str] | None = None) -> int:
     try:
         return run(sys.argv if argv is None else argv)
     except SlurpyError as error:
+        print(f"slurpy: error: {error}", file=sys.stderr)
+        return 1
+    except OSError as error:
+        # process boundary: translate filesystem failures into the same
+        # actionable form instead of a traceback.
         print(f"slurpy: error: {error}", file=sys.stderr)
         return 1
     except KeyboardInterrupt:
