@@ -1,0 +1,31 @@
+# dirac. copy to a config directory and set [paths].
+# paired inputs: slurpy dirac sp_hf.inp hgh2.mol
+#                slurpy dirac a.inp a.mol b.inp b.mol   (array of pairs)
+
+[software]
+extensions = [".inp"]
+secondary_extensions = [".mol"]
+
+[resources]
+cpus = 4
+memory_gb = 8
+
+[paths]
+pam = "/path/to/dirac/pam"
+
+[environment]
+setup = """
+module purge
+# module load intel intelmpi
+# pam takes per-process memory. --ag is the cap (the fair share of the
+# allocation) and --gb the working memory, kept at 4/5 for overhead.
+mem_per_cpu=$(( {memory_gb} / {cpus} ))
+pam_gb=$(( mem_per_cpu * 4 / 5 ))
+"""
+
+[execution]
+# pam writes its own output files inside the working directory, so the
+# scratch archive captures the results.
+command = '"{pam}" --mpi={cpus} --gb=$pam_gb --ag=$mem_per_cpu --scratch="{scratch}" --mol="{secondary}" --inp="{input}"'
+scratch = true
+archive = true

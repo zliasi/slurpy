@@ -1,0 +1,30 @@
+# dalton with the geometry embedded in the dal file (no separate .mol).
+# usage: slurpy dalton-embedded hf.dal
+#        slurpy dalton --variant embedded hf.dal
+
+[software]
+extensions = [".dal"]
+
+[resources]
+cpus = 4
+memory_gb = 8
+
+[paths]
+dalton_32 = "/path/to/dalton/build-par/dalton"
+dalton_64 = "/path/to/dalton/build-64-par/dalton"
+
+[environment]
+setup = """
+module purge
+# module load intel intelmpi
+dalton_bin="{dalton_32}"
+if [ {memory_gb} -gt 16 ]; then
+  dalton_bin="{dalton_64}"
+fi
+export DALTON_TMPDIR="{scratch}"
+"""
+
+[execution]
+command = '"$dalton_bin" -d -np {cpus} -gb {memory_gb} -t "{scratch}" -dal "{input}" -o "{output_dir}/{stem}.out"'
+scratch = true
+archive = true

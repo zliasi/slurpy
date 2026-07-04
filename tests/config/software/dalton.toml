@@ -1,0 +1,24 @@
+# fixture dalton config for tests: paired inputs.
+
+[software]
+extensions = [".dal"]
+secondary_extensions = [".mol"]
+
+[paths]
+dalton_32 = "/opt/dalton/dalton32"
+dalton_64 = "/opt/dalton/dalton64"
+
+[environment]
+setup = """
+module purge
+dalton_bin="{dalton_32}"
+if [ {memory_gb} -gt 16 ]; then
+  dalton_bin="{dalton_64}"
+fi
+export DALTON_TMPDIR="{scratch}"
+"""
+
+[execution]
+command = '"$dalton_bin" -d -np {cpus} -gb {memory_gb} -t "{scratch}" -dal "{input}" -mol "{secondary}" -o "{output_dir}/{stem}.out"'
+scratch = true
+archive = true

@@ -60,6 +60,8 @@ ENGINE_PLACEHOLDERS = frozenset(
         "input",
         "input_path",
         "stem",
+        "secondary",
+        "secondary_path",
         "output_dir",
         "scratch",
         "cpus",
@@ -294,6 +296,7 @@ class SoftwareConfig:
     source: Path
     command: str
     extensions: tuple[str, ...]
+    secondary_extensions: tuple[str, ...]
     setup: str
     scratch: bool
     archive: bool
@@ -355,11 +358,25 @@ def parse_software_config(path: Path, name: str) -> SoftwareConfig:
     _check_keys(data, _SOFTWARE_TABLES, "top level", path)
 
     software = _get_table(data, "software", path)
-    _check_keys(software, ("extensions",), "[software]", path)
+    _check_keys(software, ("extensions", "secondary_extensions"), "[software]", path)
     extensions = tuple(
         ext if ext.startswith(".") else f".{ext}"
         for ext in _get_str_list(software, "extensions", "[software]", path)
     )
+    secondary_extensions = tuple(
+        ext if ext.startswith(".") else f".{ext}"
+        for ext in _get_str_list(software, "secondary_extensions", "[software]", path)
+    )
+    if secondary_extensions and not extensions:
+        raise SlurpyError(
+            f"{path} sets secondary_extensions without extensions. the "
+            "primary extensions are needed to tell the two inputs apart"
+        )
+    if set(extensions) & set(secondary_extensions):
+        raise SlurpyError(
+            f"{path} lists the same extension in extensions and "
+            "secondary_extensions. they must be distinct"
+        )
 
     execution = _get_table(data, "execution", path)
     _check_keys(
@@ -454,6 +471,7 @@ def parse_software_config(path: Path, name: str) -> SoftwareConfig:
         source=path,
         command=command,
         extensions=extensions,
+        secondary_extensions=secondary_extensions,
         setup=setup,
         scratch=scratch,
         archive=archive,
@@ -479,6 +497,8 @@ def substitute(template: str, values: Mapping[str, str], context: str) -> str:
             hint = ". pass --launcher or set [execution].launcher"
         elif key == "scratch":
             hint = ". set scratch = true in [execution]"
+        elif key in ("secondary", "secondary_path"):
+            hint = ". set secondary_extensions in [software]"
         raise SlurpyError(
             f'unknown placeholder "{{{key}}}" in {context}{hint}. '
             f"available: {', '.join(sorted(values))}"
@@ -493,6 +513,7 @@ class JobSpec:
 
     job_name: str
     inputs: tuple[str, ...]
+    secondaries: tuple[str, ...] | None
     stems: tuple[str, ...]
     array: bool
     throttle: int
@@ -563,6 +584,9 @@ def _placeholder_values(spec: JobSpec, software: SoftwareConfig) -> dict[str, st
     }
     if software.scratch:
         values["scratch"] = "$scratch"
+    if spec.secondaries is not None:
+        values["secondary"] = "$secondary"
+        values["secondary_path"] = "$secondary_path"
     if spec.launcher is not None:
         values["launcher"] = spec.launcher
     values.update(software.paths)
@@ -573,20 +597,35 @@ def render_body(
     spec: JobSpec, software: SoftwareConfig, site: SiteDefaults
 ) -> list[str]:
     values = _placeholder_values(spec, software)
+    secondaries = spec.secondaries
     lines = ["", "set -euo pipefail", ""]
     if spec.array:
-        lines.append(
-            'input_path="$(sed -n "${SLURM_ARRAY_TASK_ID}p" '
-            f'"{manifest_name(spec.job_name)}")"'
-        )
-        lines.append('stem="$(basename "$input_path")"')
-        if software.extensions:
-            lines.append('stem="${stem%.*}"')
+        if secondaries is not None:
+            lines.append(
+                "IFS=$'\\t' read -r input_path secondary_path <<< "
+                '"$(sed -n "${SLURM_ARRAY_TASK_ID}p" '
+                f'"{manifest_name(spec.job_name)}")"'
+            )
+            lines.append('stem="$(basename "$input_path")"')
+            lines.append('secondary_stem="$(basename "$secondary_path")"')
+            lines.append('stem="${stem%.*}-${secondary_stem%.*}"')
+        else:
+            lines.append(
+                'input_path="$(sed -n "${SLURM_ARRAY_TASK_ID}p" '
+                f'"{manifest_name(spec.job_name)}")"'
+            )
+            lines.append('stem="$(basename "$input_path")"')
+            if software.extensions:
+                lines.append('stem="${stem%.*}"')
     else:
         lines.append(f'input_path="{spec.inputs[0]}"')
+        if secondaries is not None:
+            lines.append(f'secondary_path="{secondaries[0]}"')
         lines.append(f'stem="{spec.stems[0]}"')
     if not software.scratch:
         lines.append('input="$input_path"')
+        if secondaries is not None:
+            lines.append('secondary="$secondary_path"')
     lines += ["", "mkdir -p output"]
     if software.scratch:
         task_dir = (
@@ -604,12 +643,12 @@ def render_body(
         # module load and activate scripts often trip set -u.
         lines += ["", "set +u", *setup.splitlines(), "set -u"]
     if software.scratch:
-        lines += [
-            "",
-            'cp "$input_path" "$scratch/"',
-            'cd "$scratch"',
-            'input="$(basename "$input_path")"',
-        ]
+        lines += ["", 'cp "$input_path" "$scratch/"']
+        if secondaries is not None:
+            lines.append('cp "$secondary_path" "$scratch/"')
+        lines += ['cd "$scratch"', 'input="$(basename "$input_path")"']
+        if secondaries is not None:
+            lines.append('secondary="$(basename "$secondary_path")"')
     command = substitute(
         software.command, values, f"[execution].command of {software.source}"
     )
@@ -638,26 +677,50 @@ def render_script(spec: JobSpec, software: SoftwareConfig, site: SiteDefaults) -
     return "\n".join(lines) + "\n"
 
 
+def _check_input_file(text: str) -> None:
+    """Reject unsafe names and missing files."""
+    if not INPUT_NAME_RE.fullmatch(text):
+        raise SlurpyError(
+            f'input "{text}" contains unsupported characters. rename '
+            "the file using letters, digits, dots, dashes, underscores"
+        )
+    if not Path(text).is_file():
+        raise SlurpyError(
+            f'input file "{text}" not found. check the spelling, and '
+            "run slurpy from the directory containing the input or "
+            "give its path"
+        )
+
+
+def _record_stem(stem_sources: dict[str, str], stem: str, source: str) -> None:
+    other = stem_sources.get(stem)
+    if other is not None:
+        raise SlurpyError(
+            f'"{source}" and "{other}" would both write results named '
+            f'"{stem}". rename one of them'
+        )
+    stem_sources[stem] = source
+
+
+def input_stem(text: str, extensions: tuple[str, ...]) -> str:
+    """Return the job stem: basename, minus a matched known extension."""
+    name = Path(text).name
+    suffix = Path(text).suffix
+    if extensions and suffix in extensions:
+        return name[: -len(suffix)]
+    return name
+
+
 def validate_inputs(
     raw_inputs: Sequence[str], software: SoftwareConfig
-) -> tuple[str, ...]:
-    """Check that every input exists, matches the extension, and is safe."""
+) -> tuple[tuple[str, ...], tuple[str, ...]]:
+    """Validate single-input jobs. Return inputs and their stems."""
     seen: set[str] = set()
     stem_sources: dict[str, str] = {}
+    stems: list[str] = []
     for text in raw_inputs:
-        if not INPUT_NAME_RE.fullmatch(text):
-            raise SlurpyError(
-                f'input "{text}" contains unsupported characters. rename '
-                "the file using letters, digits, dots, dashes, underscores"
-            )
-        path = Path(text)
-        if not path.is_file():
-            raise SlurpyError(
-                f'input file "{text}" not found. check the spelling, and '
-                "run slurpy from the directory containing the input or "
-                "give its path"
-            )
-        if software.extensions and path.suffix not in software.extensions:
+        _check_input_file(text)
+        if software.extensions and Path(text).suffix not in software.extensions:
             expected = ", ".join(software.extensions)
             raise SlurpyError(
                 f'"{text}" does not match the {software.name} input '
@@ -669,24 +732,78 @@ def validate_inputs(
                 f'input "{text}" given more than once. check the file list'
             )
         seen.add(text)
-        stem = input_stem(text, software)
-        other = stem_sources.get(stem)
-        if other is not None:
-            raise SlurpyError(
-                f'"{text}" and "{other}" would both write results named '
-                f'"{stem}". rename one of them'
+        stem = input_stem(text, software.extensions)
+        _record_stem(stem_sources, stem, text)
+        stems.append(stem)
+    return tuple(raw_inputs), tuple(stems)
+
+
+def group_paired_inputs(
+    raw_inputs: Sequence[str], software: SoftwareConfig
+) -> tuple[tuple[str, ...], tuple[str, ...], tuple[str, ...]]:
+    """
+    Pair primary and secondary inputs by walking the arguments in order.
+
+    A primary file starts a group and every following secondary file forms
+    one job with it. Return primaries, secondaries, and pair stems, all
+    aligned per job.
+    """
+    primary_names = ", ".join(software.extensions)
+    secondary_names = ", ".join(software.secondary_extensions)
+    primaries: list[str] = []
+    secondaries: list[str] = []
+    stems: list[str] = []
+    stem_sources: dict[str, str] = {}
+    seen_pairs: set[tuple[str, str]] = set()
+    current: str | None = None
+    current_paired = False
+    for text in raw_inputs:
+        _check_input_file(text)
+        suffix = Path(text).suffix
+        if suffix in software.extensions:
+            if current is not None and not current_paired:
+                raise SlurpyError(
+                    f'"{current}" has no {secondary_names} file. every '
+                    f"{primary_names} file needs at least one following it"
+                )
+            current = text
+            current_paired = False
+        elif suffix in software.secondary_extensions:
+            if current is None:
+                raise SlurpyError(
+                    f'"{text}" comes before any {primary_names} file. give '
+                    f"the calculation file first, then its {secondary_names} "
+                    "file(s)"
+                )
+            pair = (current, text)
+            if pair in seen_pairs:
+                raise SlurpyError(
+                    f'pair "{current}" + "{text}" given more than once. '
+                    "check the file list"
+                )
+            seen_pairs.add(pair)
+            stem = (
+                f"{input_stem(current, software.extensions)}-"
+                f"{input_stem(text, software.secondary_extensions)}"
             )
-        stem_sources[stem] = text
-    return tuple(raw_inputs)
-
-
-def input_stem(text: str, software: SoftwareConfig) -> str:
-    """Return the job stem: basename, minus a matched known extension."""
-    name = Path(text).name
-    suffix = Path(text).suffix
-    if software.extensions and suffix in software.extensions:
-        return name[: -len(suffix)]
-    return name
+            _record_stem(stem_sources, stem, f"{current} + {text}")
+            primaries.append(current)
+            secondaries.append(text)
+            stems.append(stem)
+            current_paired = True
+        else:
+            raise SlurpyError(
+                f'"{text}" does not match the {software.name} input '
+                f"extensions ({primary_names}) or secondary extensions "
+                f"({secondary_names})"
+            )
+    if current is not None and not current_paired:
+        raise SlurpyError(
+            f'"{current}" has no {secondary_names} file. every '
+            f"{primary_names} file needs at least one following it"
+        )
+    assert primaries, "argument walk produced no pairs"
+    return tuple(primaries), tuple(secondaries), tuple(stems)
 
 
 def resolve_exclude(software: SoftwareConfig, partition: str | None) -> str | None:
@@ -729,6 +846,8 @@ def resolve_spec(
     software: SoftwareConfig,
     site: SiteDefaults,
     inputs: tuple[str, ...],
+    secondaries: tuple[str, ...] | None,
+    stems: tuple[str, ...],
 ) -> JobSpec:
     """Merge CLI flags, software resources, and site defaults into a spec."""
     if args.time is not None and not TIME_LIMIT_RE.fullmatch(args.time):
@@ -761,7 +880,6 @@ def resolve_spec(
         value = software.resources.get("partition")
         partition = value if isinstance(value, str) else site.partition
 
-    stems = tuple(input_stem(text, software) for text in inputs)
     job_name = args.job_name if args.job_name else stems[0]
     if not JOB_NAME_RE.fullmatch(job_name):
         raise SlurpyError(
@@ -772,6 +890,7 @@ def resolve_spec(
     return JobSpec(
         job_name=job_name,
         inputs=inputs,
+        secondaries=secondaries,
         stems=stems,
         array=len(inputs) > 1,
         throttle=_resolve_int(args.throttle, software, "throttle", site.throttle),
@@ -817,8 +936,20 @@ def backup_existing_outputs(output_dir: Path, stems: Sequence[str]) -> None:
             print(f"backup: {path} -> {destination}")
 
 
-def write_manifest(path: Path, inputs: Sequence[str]) -> None:
-    path.write_text("".join(f"{text}\n" for text in inputs))
+def write_manifest(
+    path: Path,
+    inputs: Sequence[str],
+    secondaries: Sequence[str] | None = None,
+) -> None:
+    """Write one input per line, tab-joined with its secondary if paired."""
+    if secondaries is None:
+        lines = [f"{text}\n" for text in inputs]
+    else:
+        lines = [
+            f"{text}\t{secondary}\n"
+            for text, secondary in zip(inputs, secondaries, strict=True)
+        ]
+    path.write_text("".join(lines))
     path.chmod(0o600)
 
 
@@ -950,8 +1081,12 @@ def cmd_submit(software_name: str, argv: Sequence[str]) -> int:
     if config_path is None:
         raise _unknown_software_error(software_name, search_path)
     software = parse_software_config(config_path, software_name)
-    inputs = validate_inputs(args.inputs, software)
-    spec = resolve_spec(args, software, site, inputs)
+    if software.secondary_extensions:
+        inputs, secondaries, stems = group_paired_inputs(args.inputs, software)
+    else:
+        inputs, stems = validate_inputs(args.inputs, software)
+        secondaries = None
+    spec = resolve_spec(args, software, site, inputs, secondaries, stems)
     script = render_script(spec, software, site)
 
     if args.dry_run:
@@ -963,7 +1098,9 @@ def cmd_submit(software_name: str, argv: Sequence[str]) -> int:
     with _submission_lock(output_dir):
         backup_existing_outputs(output_dir, spec.stems)
         if spec.array:
-            write_manifest(Path(manifest_name(spec.job_name)), spec.inputs)
+            write_manifest(
+                Path(manifest_name(spec.job_name)), spec.inputs, spec.secondaries
+            )
         job_id = submit_script(script)
     if spec.array:
         print(

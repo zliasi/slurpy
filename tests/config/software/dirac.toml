@@ -1,0 +1,20 @@
+# fixture dirac config for tests: paired inputs, pam memory split.
+
+[software]
+extensions = [".inp"]
+secondary_extensions = [".mol"]
+
+[paths]
+pam = "/opt/dirac/pam"
+
+[environment]
+setup = """
+module purge
+mem_per_cpu=$(( {memory_gb} / {cpus} ))
+pam_gb=$(( mem_per_cpu * 4 / 5 ))
+"""
+
+[execution]
+command = '"{pam}" --mpi={cpus} --gb=$pam_gb --ag=$mem_per_cpu --scratch="{scratch}" --mol="{secondary}" --inp="{input}"'
+scratch = true
+archive = true

@@ -94,6 +94,21 @@ GOLDEN_CASES: list[tuple[str, list[str], list[str]]] = [
         ["exec", "hello.py", "--launcher", "python3", "--dry-run"],
         ["hello.py"],
     ),
+    (
+        "dalton-pair-single",
+        ["dalton", "hf.dal", "water.mol", "--dry-run"],
+        ["hf.dal", "water.mol"],
+    ),
+    (
+        "dalton-pair-array",
+        ["dalton", "dft.dal", "a.mol", "b.mol", "c.mol", "-m", "32", "--dry-run"],
+        ["dft.dal", "a.mol", "b.mol", "c.mol"],
+    ),
+    (
+        "dirac-pair-single",
+        ["dirac", "sp_hf.inp", "hgh2.mol", "-c", "4", "-m", "20", "--dry-run"],
+        ["sp_hf.inp", "hgh2.mol"],
+    ),
 ]
 
 
@@ -211,6 +226,65 @@ class ValidationTests(TempCwdTestCase):
             code, _, stderr = run_slurpy(["exec", "a.sh", "-c", "8", "--dry-run"])
         self.assertEqual(code, 1)
         self.assertIn("max_cpus", stderr)
+
+
+class PairedInputTests(TempCwdTestCase):
+    def test_alternating_pairs(self) -> None:
+        self.touch("a.inp", "a.mol", "b.inp", "b.mol")
+        code, stdout, stderr = run_slurpy(
+            ["dirac", "a.inp", "a.mol", "b.inp", "b.mol", "--dry-run"]
+        )
+        self.assertEqual(code, 0, stderr)
+        self.assertIn("--array=1-2%5", stdout)
+        self.assertIn(".a-a.manifest", stdout)
+
+    def test_secondary_before_primary(self) -> None:
+        self.touch("water.mol", "hf.dal")
+        code, _, stderr = run_slurpy(["dalton", "water.mol", "hf.dal", "--dry-run"])
+        self.assertEqual(code, 1)
+        self.assertIn("comes before any .dal file", stderr)
+
+    def test_primary_without_secondary(self) -> None:
+        self.touch("hf.dal")
+        code, _, stderr = run_slurpy(["dalton", "hf.dal", "--dry-run"])
+        self.assertEqual(code, 1)
+        self.assertIn("has no .mol file", stderr)
+
+    def test_trailing_unpaired_primary(self) -> None:
+        self.touch("a.dal", "a.mol", "b.dal")
+        code, _, stderr = run_slurpy(["dalton", "a.dal", "a.mol", "b.dal", "--dry-run"])
+        self.assertEqual(code, 1)
+        self.assertIn('"b.dal" has no .mol file', stderr)
+
+    def test_duplicate_pair(self) -> None:
+        self.touch("a.dal", "a.mol")
+        code, _, stderr = run_slurpy(["dalton", "a.dal", "a.mol", "a.mol", "--dry-run"])
+        self.assertEqual(code, 1)
+        self.assertIn("more than once", stderr)
+
+    def test_wrong_extension_in_pairs(self) -> None:
+        self.touch("a.dal", "a.xyz")
+        code, _, stderr = run_slurpy(["dalton", "a.dal", "a.xyz", "--dry-run"])
+        self.assertEqual(code, 1)
+        self.assertIn("secondary extensions", stderr)
+
+    def test_paired_manifest_written(self) -> None:
+        self.touch("a.dal", "a.mol", "b.mol")
+        bin_dir = Path("fakebin")
+        bin_dir.mkdir()
+        sbatch = bin_dir / "sbatch"
+        sbatch.write_text(
+            "#!/bin/bash\ncat > /dev/null\necho 'Submitted batch job 9'\n"
+        )
+        sbatch.chmod(0o755)
+        with mock.patch.dict(
+            os.environ, {"PATH": f"{bin_dir.resolve()}:{os.environ['PATH']}"}
+        ):
+            code, _, stderr = run_slurpy(["dalton", "a.dal", "a.mol", "b.mol"])
+        self.assertEqual(code, 0, stderr)
+        self.assertEqual(
+            Path(".a-a.manifest").read_text(), "a.dal\ta.mol\na.dal\tb.mol\n"
+        )
 
 
 class ConfigTests(TempCwdTestCase):

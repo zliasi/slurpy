@@ -1,0 +1,33 @@
+# dalton 2020. copy to a config directory and set [paths].
+# paired inputs: slurpy dalton hf.dal water.mol
+#                slurpy dalton dft.dal a.mol b.mol c.mol   (array of pairs)
+# for dal files with embedded geometry see dalton-embedded.toml.
+
+[software]
+extensions = [".dal"]
+secondary_extensions = [".mol"]
+
+[resources]
+cpus = 4
+memory_gb = 8
+
+[paths]
+dalton_32 = "/path/to/dalton/build-par/dalton"
+dalton_64 = "/path/to/dalton/build-64-par/dalton"
+
+[environment]
+setup = """
+module purge
+# module load intel intelmpi
+# the 64-bit integer build is needed for large-memory jobs.
+dalton_bin="{dalton_32}"
+if [ {memory_gb} -gt 16 ]; then
+  dalton_bin="{dalton_64}"
+fi
+export DALTON_TMPDIR="{scratch}"
+"""
+
+[execution]
+command = '"$dalton_bin" -d -np {cpus} -gb {memory_gb} -t "{scratch}" -dal "{input}" -mol "{secondary}" -o "{output_dir}/{stem}.out"'
+scratch = true
+archive = true
