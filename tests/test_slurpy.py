@@ -109,6 +109,16 @@ GOLDEN_CASES: list[tuple[str, list[str], list[str]]] = [
         ["dirac", "sp_hf.inp", "hgh2.mol", "-c", "4", "-m", "20", "--dry-run"],
         ["sp_hf.inp", "hgh2.mol"],
     ),
+    (
+        "cfour-single-default",
+        ["cfour", "ccsd.inp", "-c", "2", "--dry-run"],
+        ["ccsd.inp"],
+    ),
+    (
+        "python-single-default",
+        ["python", "analysis.py", "-c", "4", "--dry-run"],
+        ["analysis.py"],
+    ),
 ]
 
 
@@ -285,6 +295,33 @@ class PairedInputTests(TempCwdTestCase):
         self.assertEqual(
             Path(".a-a.manifest").read_text(), "a.dal\ta.mol\na.dal\tb.mol\n"
         )
+
+
+class SetFlagTests(TempCwdTestCase):
+    def test_set_overrides_path(self) -> None:
+        self.touch("ccsd.inp")
+        code, stdout, stderr = run_slurpy(
+            ["cfour", "ccsd.inp", "--set", "genbas=/custom/GENBAS", "--dry-run"]
+        )
+        self.assertEqual(code, 0, stderr)
+        self.assertIn('cp "/custom/GENBAS" GENBAS', stdout)
+
+    def test_set_unknown_key(self) -> None:
+        self.touch("ccsd.inp")
+        code, _, stderr = run_slurpy(
+            ["cfour", "ccsd.inp", "--set", "genbass=/x", "--dry-run"]
+        )
+        self.assertEqual(code, 1)
+        self.assertIn('"genbass" is not in [paths]', stderr)
+        self.assertIn("genbas", stderr)
+
+    def test_set_bad_format(self) -> None:
+        self.touch("ccsd.inp")
+        code, _, stderr = run_slurpy(
+            ["cfour", "ccsd.inp", "--set", "genbas", "--dry-run"]
+        )
+        self.assertEqual(code, 1)
+        self.assertIn("use --set key=value", stderr)
 
 
 class ConfigTests(TempCwdTestCase):

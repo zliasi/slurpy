@@ -1,0 +1,46 @@
+# cfour. copy to a config directory and set [paths].
+# usage: slurpy cfour job.inp
+#        slurpy cfour job.inp --set genbas=~/my/GENBAS
+# cfour runs from a private copy of its binaries in scratch. the copy is
+# flock-guarded so concurrent array tasks do not race on the install dir.
+
+[software]
+extensions = [".inp"]
+
+[resources]
+cpus = 1
+memory_gb = 4
+
+[paths]
+cfour_dir = "/path/to/CFOUR"
+# default basis set file. override per run with --set genbas=FILE.
+genbas = "/path/to/CFOUR/basis/GENBAS"
+
+[environment]
+setup = """
+module purge
+export CFOUR="{cfour_dir}"
+export OMP_NUM_THREADS={cpus}
+"""
+
+[execution]
+# cfour expects its input as ZMAT and the basis file as GENBAS in cwd.
+command = '''
+lock_file="/tmp/cfour_copy_${SLURM_ARRAY_JOB_ID:-$SLURM_JOB_ID}.lock"
+exec 200>"$lock_file"
+flock -w 300 200
+cp "{cfour_dir}"/bin/* .
+if [ -f "$SLURM_SUBMIT_DIR/GENBAS" ]; then
+  cp "$SLURM_SUBMIT_DIR/GENBAS" GENBAS
+else
+  cp "{genbas}" GENBAS
+fi
+cp "{cfour_dir}/basis/ECPDATA" .
+flock -u 200
+exec 200>&-
+cp "$input" ZMAT
+hostname > nodefile
+./xcfour ./ZMAT ./GENBAS > "{output_dir}/{stem}.out"
+'''
+scratch = true
+archive = true

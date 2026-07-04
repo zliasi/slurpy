@@ -15,6 +15,7 @@ Minimum setup: this file plus one software config, for example
 from __future__ import annotations
 
 import argparse
+import dataclasses
 import fcntl
 import os
 import re
@@ -485,6 +486,27 @@ def parse_software_config(path: Path, name: str) -> SoftwareConfig:
     )
 
 
+def apply_path_overrides(
+    software: SoftwareConfig, overrides: Sequence[str] | None
+) -> SoftwareConfig:
+    """Apply --set key=value overrides to existing [paths] entries."""
+    if not overrides:
+        return software
+    paths = dict(software.paths)
+    for item in overrides:
+        key, separator, value = item.partition("=")
+        if not separator or not key or not value:
+            raise SlurpyError(f'invalid --set "{item}". use --set key=value')
+        if key not in paths:
+            available = ", ".join(sorted(paths)) or "none"
+            raise SlurpyError(
+                f'--set key "{key}" is not in [paths] of {software.source}. '
+                f"available: {available}"
+            )
+        paths[key] = os.path.expanduser(value)
+    return dataclasses.replace(software, paths=paths)
+
+
 def substitute(template: str, values: Mapping[str, str], context: str) -> str:
     """Replace {name} placeholders, failing loudly on unknown names."""
 
@@ -652,7 +674,7 @@ def render_body(
     command = substitute(
         software.command, values, f"[execution].command of {software.source}"
     )
-    lines += ["", command]
+    lines += ["", command.strip("\n")]
     if software.retrieve:
         lines += [
             "",
@@ -1022,6 +1044,13 @@ def build_submit_parser(software_name: str) -> argparse.ArgumentParser:
         "--launcher", help="program that runs the input (exec-style configs)"
     )
     parser.add_argument("--variant", help="use software/<name>-<variant>.toml")
+    parser.add_argument(
+        "--set",
+        dest="overrides",
+        action="append",
+        metavar="KEY=VALUE",
+        help="override a [paths] value for this submission",
+    )
     parser.add_argument("--no-archive", action="store_true")
     parser.add_argument(
         "--dry-run",
@@ -1081,6 +1110,7 @@ def cmd_submit(software_name: str, argv: Sequence[str]) -> int:
     if config_path is None:
         raise _unknown_software_error(software_name, search_path)
     software = parse_software_config(config_path, software_name)
+    software = apply_path_overrides(software, args.overrides)
     if software.secondary_extensions:
         inputs, secondaries, stems = group_paired_inputs(args.inputs, software)
     else:

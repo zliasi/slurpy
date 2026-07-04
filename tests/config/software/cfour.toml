@@ -1,0 +1,24 @@
+# fixture cfour config for tests: multi-line command, --set target.
+
+[software]
+extensions = [".inp"]
+
+[paths]
+cfour_dir = "/opt/cfour"
+genbas = "/opt/cfour/basis/GENBAS"
+
+[environment]
+setup = """
+export CFOUR="{cfour_dir}"
+export OMP_NUM_THREADS={cpus}
+"""
+
+[execution]
+command = '''
+cp "{cfour_dir}"/bin/* .
+cp "{genbas}" GENBAS
+cp "$input" ZMAT
+./xcfour ./ZMAT ./GENBAS > "{output_dir}/{stem}.out"
+'''
+scratch = true
+archive = true

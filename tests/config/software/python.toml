@@ -1,0 +1,12 @@
+# fixture python config for tests.
+
+[software]
+extensions = [".py"]
+
+[environment]
+setup = """
+export OMP_NUM_THREADS={cpus}
+"""
+
+[execution]
+command = 'python3 "{input}"'

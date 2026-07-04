@@ -1,0 +1,21 @@
+# python scripts. works as-is with the system python3.
+# for a specific environment, copy to python-<env>.toml and put the
+# activation in setup, then run: slurpy python-<env> script.py
+# activation examples:
+#   module load python/3.11
+#   conda activate myenv
+#   source ~/venvs/myenv/bin/activate
+#   source "$(conda info --base)/etc/profile.d/conda.sh" && conda activate myenv
+# for uv projects, change the command instead:
+#   command = 'uv run --project /path/to/project python "{input}"'
+
+[software]
+extensions = [".py"]
+
+[environment]
+setup = """
+export OMP_NUM_THREADS={cpus}
+"""
+
+[execution]
+command = 'python3 "{input}"'
