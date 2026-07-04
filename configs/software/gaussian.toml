@@ -22,3 +22,13 @@ command = '"{g16}" "{input}" > "{output_dir}/{stem}.out"'
 scratch = true
 archive = true
 retrieve = ["chk"]
+
+[inject]
+# with --inject-resources, the link 0 lines in a staged copy of the
+# input are made consistent with -c and -m. all %nproc spellings are
+# rewritten to %nprocshared, %mem gets 85% of the allocation.
+memory_fraction = 0.85
+rules = [
+  { match = '(?im)^%(nprocshared|nprocs|nproc|cpu)=.*$', write = '%nprocshared={cpus}' },
+  { match = '(?im)^%mem=.*$', write = '%mem={inject_memory_mb}MB' },
+]

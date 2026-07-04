@@ -18,3 +18,10 @@ command = '"{orca_dir}/orca" "{input}" > "{output_dir}/{stem}.out"'
 scratch = true
 archive = true
 retrieve = ["gbw", "xyz"]
+
+[inject]
+memory_fraction = 0.75
+rules = [
+  { match = '(?im)^%pal\s+nprocs\s+\d+\s+end\s*$', write = '%pal nprocs {cpus} end' },
+  { match = '(?im)^%maxcore\s+\d+\s*$', write = '%maxcore {inject_memory_mb_per_cpu}' },
+]

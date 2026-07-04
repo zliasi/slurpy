@@ -297,6 +297,84 @@ class PairedInputTests(TempCwdTestCase):
         )
 
 
+class InjectTests(TempCwdTestCase):
+    def submit_dry(self, argv: list[str]) -> tuple[int, str, str]:
+        return run_slurpy([*argv, "--inject-resources", "--dry-run"])
+
+    def test_orca_replaces_existing_directives(self) -> None:
+        Path("h2o.inp").write_text("%pal nprocs 2 end\n%maxcore 1000\n! b3lyp\n")
+        bin_dir = Path("fakebin")
+        bin_dir.mkdir()
+        sbatch = bin_dir / "sbatch"
+        sbatch.write_text(
+            "#!/bin/bash\ncat > /dev/null\necho 'Submitted batch job 1'\n"
+        )
+        sbatch.chmod(0o755)
+        with mock.patch.dict(
+            os.environ, {"PATH": f"{bin_dir.resolve()}:{os.environ['PATH']}"}
+        ):
+            code, _, stderr = run_slurpy(
+                ["orca", "h2o.inp", "-c", "4", "-m", "16", "--inject-resources"]
+            )
+        self.assertEqual(code, 0, stderr)
+        staged = Path(".slurpy-staged/h2o.inp").read_text()
+        self.assertIn("%pal nprocs 4 end", staged)
+        # 16 GB * 1024 * 0.75 / 4 cores
+        self.assertIn("%maxcore 3072", staged)
+        self.assertNotIn("%maxcore 1000", staged)
+        # the original is untouched.
+        self.assertIn("%maxcore 1000", Path("h2o.inp").read_text())
+
+    def test_orca_inserts_missing_directives(self) -> None:
+        Path("h2o.inp").write_text("! b3lyp def2-svp\n")
+        code, stdout, stderr = self.submit_dry(["orca", "h2o.inp", "-c", "2"])
+        self.assertEqual(code, 0, stderr)
+        self.assertIn(".slurpy-staged/h2o.inp", stdout)
+        self.assertFalse(Path(".slurpy-staged").exists())
+
+    def test_multiline_pal_block_replaced(self) -> None:
+        Path("h2o.inp").write_text("%pal\n  nprocs 8\nend\n! hf\n")
+        values = {"cpus": "4", "inject_memory_mb_per_cpu": "1536"}
+        software = slurpy.parse_software_config(
+            CONFIG_DIR / "software" / "orca.toml", "orca"
+        )
+        result = slurpy.apply_inject_rules(
+            "%pal\n  nprocs 8\nend\n! hf\n", software, values, "h2o.inp"
+        )
+        self.assertIn("%pal nprocs 4 end", result)
+        self.assertNotIn("nprocs 8", result)
+
+    def test_gaussian_spelling_rewritten(self) -> None:
+        Path("h2o.com").write_text("%nprocs=2\n%mem=1GB\n#p b3lyp\n")
+        code, _, stderr = self.submit_dry(
+            ["gaussian", "h2o.com", "-c", "8", "-m", "16"]
+        )
+        self.assertEqual(code, 0, stderr)
+        software = slurpy.parse_software_config(
+            CONFIG_DIR / "software" / "gaussian.toml", "gaussian"
+        )
+        values = {"cpus": "8", "inject_memory_mb": "13926"}
+        result = slurpy.apply_inject_rules(
+            Path("h2o.com").read_text(), software, values, "h2o.com"
+        )
+        self.assertIn("%nprocshared=8", result)
+        self.assertIn("%mem=13926MB", result)
+        self.assertNotIn("%nprocs=2", result)
+
+    def test_ambiguous_directives_abort(self) -> None:
+        Path("h2o.com").write_text("%mem=1GB\n%mem=2GB\n#p hf\n")
+        code, _, stderr = self.submit_dry(["gaussian", "h2o.com"])
+        self.assertEqual(code, 1)
+        self.assertIn("2 lines matching", stderr)
+        self.assertIn("lines 1, 2", stderr)
+
+    def test_flag_without_rules(self) -> None:
+        self.touch("relax.py")
+        code, _, stderr = self.submit_dry(["gpaw", "relax.py"])
+        self.assertEqual(code, 1)
+        self.assertIn("[inject] rules", stderr)
+
+
 class SetFlagTests(TempCwdTestCase):
     def test_set_overrides_path(self) -> None:
         self.touch("ccsd.inp")

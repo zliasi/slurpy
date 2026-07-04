@@ -35,3 +35,13 @@ retrieve = ["gbw", "xyz"]
 # nodes whose cpus break the bundled openmpi can be excluded per partition:
 # exclude_file = "/path/to/exclude-list.txt"
 # exclude_partition = "chem"
+
+[inject]
+# with --inject-resources, %pal and %maxcore in a staged copy of the
+# input are made consistent with -c and -m. orca overshoots %maxcore,
+# so it gets 75% of the per-core allocation.
+memory_fraction = 0.75
+rules = [
+  { match = '(?im)^%pal\s+nprocs\s+\d+\s+end\s*$', write = '%pal nprocs {cpus} end' },
+  { match = '(?im)^%maxcore\s+\d+\s*$', write = '%maxcore {inject_memory_mb_per_cpu}' },
+]

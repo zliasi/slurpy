@@ -367,6 +367,8 @@ class SoftwareConfig:
     exclude: str | None
     exclude_file: str | None
     exclude_partition: str | None
+    inject_memory_fraction: float
+    inject_rules: tuple[tuple[str, str], ...]
 
 
 _SOFTWARE_TABLES = (
@@ -376,8 +378,10 @@ _SOFTWARE_TABLES = (
     "execution",
     "paths",
     "slurm",
+    "inject",
 )
 _RESOURCE_INT_KEYS = ("cpus", "memory_gb", "ntasks", "nodes", "throttle")
+STAGING_DIR = ".slurpy-staged"
 
 
 def find_software_config(name: str, search_path: Sequence[Path]) -> Path | None:
@@ -526,6 +530,42 @@ def parse_software_config(path: Path, name: str) -> SoftwareConfig:
             f"{path} sets both exclude and exclude_file in [slurm]. " "keep one"
         )
 
+    inject = _get_table(data, "inject", path)
+    _check_keys(inject, ("memory_fraction", "rules"), "[inject]", path)
+    fraction_value = inject.get("memory_fraction", 1.0)
+    if (
+        isinstance(fraction_value, bool)
+        or not isinstance(fraction_value, (int, float))
+        or not 0 < float(fraction_value) <= 1
+    ):
+        raise SlurpyError(
+            f'"memory_fraction" in [inject] of {path} must be a number '
+            "between 0 and 1"
+        )
+    inject_memory_fraction = float(fraction_value)
+    rules_value = inject.get("rules", [])
+    if not isinstance(rules_value, list):
+        raise SlurpyError(f'"rules" in [inject] of {path} must be a list')
+    inject_rules: list[tuple[str, str]] = []
+    for entry in rules_value:
+        if (
+            not isinstance(entry, dict)
+            or set(entry) != {"match", "write"}
+            or not isinstance(entry.get("match"), str)
+            or not isinstance(entry.get("write"), str)
+        ):
+            raise SlurpyError(
+                f"every [inject] rule in {path} must be a table with "
+                "string keys match and write"
+            )
+        try:
+            re.compile(entry["match"])
+        except re.error as error:
+            raise SlurpyError(
+                f"invalid regex in [inject] rule of {path}: {error}"
+            ) from error
+        inject_rules.append((entry["match"], entry["write"]))
+
     return SoftwareConfig(
         name=name,
         source=path,
@@ -542,6 +582,8 @@ def parse_software_config(path: Path, name: str) -> SoftwareConfig:
         exclude=exclude,
         exclude_file=exclude_file,
         exclude_partition=exclude_partition,
+        inject_memory_fraction=inject_memory_fraction,
+        inject_rules=tuple(inject_rules),
     )
 
 
@@ -991,6 +1033,85 @@ def resolve_spec(
         archive=software.archive and not args.no_archive,
         launcher=args.launcher or software.launcher,
     )
+
+
+def _inject_values(spec: JobSpec, software: SoftwareConfig) -> dict[str, str]:
+    total_mb = int(spec.memory_gb * 1024 * software.inject_memory_fraction)
+    return {
+        "cpus": str(spec.cpus),
+        "ntasks": str(spec.ntasks),
+        "memory_gb": str(spec.memory_gb),
+        "inject_memory_mb": str(total_mb),
+        "inject_memory_mb_per_cpu": str(total_mb // max(spec.cpus, 1)),
+    }
+
+
+def apply_inject_rules(
+    text: str, software: SoftwareConfig, values: Mapping[str, str], source: str
+) -> str:
+    """
+    Make resource directives in an input consistent with the job.
+
+    Per rule: one match is replaced in place, no match inserts the line at
+    the top, several matches abort because editing would be a guess.
+    """
+    # validate every rule against the original text first, so reported
+    # line numbers match the user's file.
+    plan: list[tuple[re.Pattern[str], str, bool]] = []
+    for pattern, write in software.inject_rules:
+        regex = re.compile(pattern)
+        matches = list(regex.finditer(text))
+        line = substitute(write, values, f"[inject] rule of {software.source}")
+        if len(matches) > 1:
+            numbers = ", ".join(
+                str(text.count("\n", 0, match.start()) + 1) for match in matches
+            )
+            raise SlurpyError(
+                f"{source} has {len(matches)} lines matching the inject "
+                f"rule for '{line}' (lines {numbers}). remove the "
+                "duplicates, slurpy will not guess which one to edit"
+            )
+        plan.append((regex, line, bool(matches)))
+    for regex, line, found in plan:
+        if found:
+            text = regex.sub(lambda _: line, text, count=1)
+        else:
+            text = f"{line}\n{text}"
+    return text
+
+
+def stage_injected_inputs(
+    spec: JobSpec, software: SoftwareConfig, write: bool
+) -> JobSpec:
+    """
+    Rewrite resource directives in staged copies of the primary inputs.
+
+    The originals are never modified. The returned spec points at the
+    staged copies in .slurpy-staged/. With write false (dry runs) the
+    rules are still applied so errors surface, but nothing is written.
+    """
+    if not software.inject_rules:
+        raise SlurpyError(
+            f"--inject-resources needs [inject] rules in {software.source}. "
+            "add them, or drop the flag and set the directives by hand"
+        )
+    values = _inject_values(spec, software)
+    staging = Path(STAGING_DIR)
+    staged_inputs: list[str] = []
+    for original in spec.inputs:
+        try:
+            content = Path(original).read_text()
+        except UnicodeDecodeError as error:
+            raise SlurpyError(
+                f"{original} is not a text file, cannot inject resources"
+            ) from error
+        content = apply_inject_rules(content, software, values, original)
+        target = staging / Path(original).name
+        if write:
+            staging.mkdir(exist_ok=True)
+            target.write_text(content)
+        staged_inputs.append(str(target))
+    return dataclasses.replace(spec, inputs=tuple(staged_inputs))
 
 
 def _next_backup_path(backup_dir: Path, name: str) -> Path:
@@ -1699,6 +1820,12 @@ def build_submit_parser(software_name: str) -> argparse.ArgumentParser:
         metavar="KEY=VALUE",
         help="override a [paths] value for this submission",
     )
+    parser.add_argument(
+        "--inject-resources",
+        action="store_true",
+        help="rewrite cpu/memory directives in a staged copy of the input "
+        "to match -c and -m",
+    )
     parser.add_argument("--no-archive", action="store_true")
     parser.add_argument(
         "--dry-run",
@@ -1765,6 +1892,8 @@ def cmd_submit(software_name: str, argv: Sequence[str]) -> int:
         inputs, stems = validate_inputs(args.inputs, software)
         secondaries = None
     spec = resolve_spec(args, software, site, inputs, secondaries, stems)
+    if args.inject_resources:
+        spec = stage_injected_inputs(spec, software, write=not args.dry_run)
     script = render_script(spec, software, site)
 
     if args.dry_run:

@@ -17,3 +17,10 @@ command = '"{g16}" "{input}" > "{output_dir}/{stem}.out"'
 scratch = true
 archive = true
 retrieve = ["chk"]
+
+[inject]
+memory_fraction = 0.85
+rules = [
+  { match = '(?im)^%(nprocshared|nprocs|nproc|cpu)=.*$', write = '%nprocshared={cpus}' },
+  { match = '(?im)^%mem=.*$', write = '%mem={inject_memory_mb}MB' },
+]
