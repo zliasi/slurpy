@@ -38,6 +38,7 @@ export OMP_NUM_THREADS={cpus}
 #   {stem}       input filename without its extension
 #   {output_dir} the output directory
 #   {scratch}    scratch directory (only when scratch = true)
+#   {secondary} {secondary_path}  the paired file (secondary_extensions)
 #   {cpus} {ntasks} {nodes} {memory_gb} {launcher}
 #   plus every key from [paths]
 command = '"{my_program}" "{input}" > "{output_dir}/{stem}.out"'
@@ -47,6 +48,8 @@ scratch = false
 archive = false
 # file extensions copied back from scratch to output/.
 retrieve = []
+# default program for {launcher}, overridable with --launcher.
+# launcher = "bash"
 
 # [slurm]
 # exclude nodes, either inline or from a file with one node per line.

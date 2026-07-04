@@ -40,8 +40,9 @@ Ground rules, in order of importance:
   it belongs in a config file, not in `slurpy.py`.
 - Never break the command line. Existing flags and their meaning are frozen.
   New behavior gets a new flag or a new config key with a safe default.
-- Scope: slurpy submits jobs. No output parsing, queue monitoring, or
-  workflow management.
+- Scope: slurpy submits jobs and provides read-only slurm information
+  and job-control commands. No chemistry output parsing and no workflow
+  management.
 - Fail loudly and helpfully. Error messages say what to do, not just what
   went wrong.
 
@@ -71,7 +72,8 @@ Workflow:
 
 5. Add or update a test for the change. New validation gets a test that
    triggers the error. New script behavior gets a golden case in
-   `tests/test_slurpy.py` (GOLDEN_CASES).
+   `tests/test_slurpy.py` (GOLDEN_CASES). Slurm command behavior is
+   tested with mocked slurm calls in `tests/test_commands.py`.
 6. Update README.md and CHANGELOG.md if behavior changed.
 7. Open a pull request.
 

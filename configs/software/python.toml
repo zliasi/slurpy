@@ -8,6 +8,8 @@
 #   source "$(conda info --base)/etc/profile.d/conda.sh" && conda activate myenv
 # for uv projects, change the command instead:
 #   command = 'uv run --project /path/to/project python "{input}"'
+# gpu jobs need no config change, pick the resource and partition at
+# submission: slurpy python train.py --gpu 1 -p gpu-partition -c 4 -m 16
 
 [software]
 extensions = [".py"]

@@ -27,7 +27,9 @@ curl -LO https://raw.githubusercontent.com/zliasi/slurpy/main/slurpy.py
 ```
 
 Prefer a different config folder? `slurpy init --dir ~/my-configs` scaffolds
-it there and slurpy remembers the location. Then copy software configs
+it there and slurpy remembers the location (unless a
+`~/.config/slurpy/slurpy.toml` already exists, then add the directory to
+its `search_path` yourself, slurpy prints a reminder). Then copy software configs
 from this repo's `configs/software/` into a config directory and fill in the
 paths for your cluster.
 
@@ -59,7 +61,7 @@ sorca -c 8 -m 16 -t 1-00:00:00 h2o.inp
 
 Passing multiple inputs submits one throttled job array, never separate
 jobs. For loops throttle Slurm, affecting you and everyone else on the 
-cluster.  Results land in `output/` by default, existing results are 
+cluster.  Results land in `output/`, existing results are 
 moved to `output/backup/` (`.bck01` ... `.bck99`) before each submission, 
 never overwritten. `--dry-run` prints the generated script instead of
 submitting. Variants like `slurpy orca-dev input.inp` (or
@@ -71,15 +73,15 @@ Use `-h` for an overview of flags
 
 ```
 -c, --cpus INT              cpu cores per task          (default: 1)
--m, --memory INT            total memory in GB          (default: 2)
+-m, --memory INT            memory in GB, per node      (default: 2)
 -N, --nodes INT             nodes                       (default: 1)
 -n, --ntasks INT            mpi tasks                   (default: 1)
     --ntasks-per-node INT   tasks per node
 -T, --throttle INT          max concurrent array tasks  (default: 5)
--t, --time D-HH:MM:SS       time limit                  (default: partition max)
+-t, --time D-HH:MM:SS       time limit                  (default: partition default)
 -p, --partition NAME        partition
 -j, --job-name NAME         custom job name             (default: input stem)
-    --gpu INT               number of gpus
+    --gpu INT               gpus per node
     --account NAME          slurm account
     --mail-type TYPE        mail event type (END,FAIL)
     --mail-user EMAIL       mail recipient
@@ -105,15 +107,17 @@ with an error. Off by default.
 ## Slurm commands
 
 Queue, job, and partition helpers, so the whole slurm day fits in one
-tool. Add `--record [FILE]` to any info command to write its output to a
-timestamped file instead of the terminal.
+tool. Add `--record [FILE]` to any info command to write its output to FILE,
+or to a timestamped file when FILE is omitted, instead of the terminal
+(not combinable with watch).
 
 ```
 slurpy q                     your queue
 slurpy qwp chem              watch your queue on one partition
 slurpy qa                    everyone's jobs
 slurpy qu NAME               another user's queue
-slurpy qj 12345 opt-run      only these jobs, by id or name
+slurpy qj 12345 12346        only these jobs, by id
+slurpy qj opt-run            or by name (ids and names do not mix)
 slurpy p [NAME ...]          partition overview
 slurpy p up                  partition and node availability
 slurpy p permission          detect and store the partitions you may use
@@ -122,7 +126,9 @@ slurpy hist                  your last 10 finished jobs with cpu and
 slurpy hist 25               last 25
 slurpy hist 10..20           jobs 10 through 20, 1 = newest
 slurpy hist 3month           usage summary for the last 3 months
-slurpy cancel ID|NAME ...    cancel jobs (asks before name matches)
+slurpy hist 12345 opt-run    specific finished jobs, by id or name
+slurpy cancel ID|NAME ...    cancel jobs (asks before name matches,
+                             --yes to skip, also for hold and release)
 slurpy hold ID ...           hold, and slurpy release to let go
 slurpy mod ID key=value      change a submitted job: throttle, nice,
                              time, dependency (e.g. dependency=afterok:ID)
@@ -130,8 +136,8 @@ slurpy mod ID key=value      change a submitted job: throttle, nice,
 
 `q` modifiers stack in any order (`w` watch, `p` partition, `a` all,
 `u` user, `j` jobs), and the long forms `slurpy queue --watch
---partition chem` work too. After `slurpy link`, `sq` is a shorthand for
-`slurpy q`.
+--partition chem` work too, as do `interactive`, `history`, and
+`modify`. After `slurpy link`, `sq` is a shorthand for `slurpy q`.
 
 ## Configuration
 
@@ -156,6 +162,9 @@ software/<name>.toml   one file per software (or flat <name>.toml)
 **`slurpy.toml`**, site-level settings:
 
 ```toml
+# shown by slurpy p, kept current by slurpy p permission
+partitions = ["chem"]
+
 [defaults]
 partition = "chem"
 cpus = 1
@@ -163,6 +172,7 @@ memory_gb = 2
 throttle = 5
 scratch_base = "/scratch"
 max_cpus = 64            # optional guard rails
+max_array_size = 5000    # refuse larger submissions before slurm does
 ```
 
 **`software/<name>.toml`**, the full software definition:

@@ -8,11 +8,19 @@ extensions = [".py"]
 ntasks = 8
 
 [environment]
+# gpaw is usually installed in a conda environment. activate it here,
+# for example:
+#   . "/path/to/miniconda3/etc/profile.d/conda.sh"
+#   conda activate myenv
+#   export PATH="$CONDA_PREFIX/bin:$PATH"
 setup = """
 module purge
-# module load gpaw
-# gpaw hangs without this.
+export OMP_NUM_THREADS={cpus}
+# gpaw built against openblas hangs without this.
 export OPENBLAS_NUM_THREADS=1
+# openmpi tuning that has proven necessary on some clusters:
+# export OMPI_MCA_pml=ob1
+# export OMPI_MCA_btl=vader,self
 """
 
 [execution]

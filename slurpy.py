@@ -154,6 +154,7 @@ setup:
   slurpy list                       available software and config paths
   slurpy link [--dir DIR]           shorthand symlinks (sorca, sq, ...)
   slurpy init [--dir DIR]           create a config directory
+  slurpy version                    print the version
 
 examples:
   slurpy orca h2o.inp
@@ -675,7 +676,7 @@ def render_header(spec: JobSpec) -> list[str]:
     lines.append(f"#SBATCH --cpus-per-task={spec.cpus}")
     lines.append(f"#SBATCH --mem={spec.memory_gb}gb")
     if spec.gpus is not None:
-        lines.append(f"#SBATCH --gres=gpu:{spec.gpus}")
+        lines.append(f"#SBATCH --gpus={spec.gpus}")
     if spec.partition:
         lines.append(f"#SBATCH --partition={spec.partition}")
     if spec.account:
@@ -1246,6 +1247,7 @@ def _split_job_selectors(tokens: Sequence[str]) -> tuple[list[str], list[str]]:
 
 
 def cmd_queue(modifiers: str, argv: Sequence[str]) -> int:
+    """Show or watch the queue, filtered by the stacked modifiers."""
     parser = argparse.ArgumentParser(
         prog="slurpy queue", description="show the job queue"
     )
@@ -1373,6 +1375,7 @@ def _write_partitions(partitions: Sequence[str]) -> Path:
 
 
 def cmd_partition(argv: Sequence[str]) -> int:
+    """Partition overview, availability view, or permission refresh."""
     parser = argparse.ArgumentParser(
         prog="slurpy partition",
         description="partition overview, availability, or permission check",
@@ -1460,6 +1463,7 @@ def _gather_job_ids(targets: Sequence[str], action: str, assume_yes: bool) -> li
 
 
 def cmd_cancel(argv: Sequence[str]) -> int:
+    """Cancel jobs by id or by confirmed name match."""
     parser = argparse.ArgumentParser(
         prog="slurpy cancel", description="cancel jobs by id or name"
     )
@@ -1475,6 +1479,7 @@ def cmd_cancel(argv: Sequence[str]) -> int:
 
 
 def cmd_hold_release(argv: Sequence[str], action: str) -> int:
+    """Hold or release jobs by id or by confirmed name match."""
     parser = argparse.ArgumentParser(
         prog=f"slurpy {action}", description=f"{action} jobs by id or name"
     )
@@ -1490,6 +1495,7 @@ def cmd_hold_release(argv: Sequence[str], action: str) -> int:
 
 
 def cmd_modify(argv: Sequence[str]) -> int:
+    """Change settings of a submitted job via scontrol update."""
     parser = argparse.ArgumentParser(
         prog="slurpy mod",
         description="change settings of a submitted job",
@@ -1704,6 +1710,7 @@ def _history_summary(jobs: Sequence[FinishedJob], months: int) -> str:
 
 
 def cmd_history(argv: Sequence[str]) -> int:
+    """Show finished jobs, or a usage summary for a month window."""
     parser = argparse.ArgumentParser(
         prog="slurpy hist",
         description="finished jobs: recent list, range, ids, or Xmonth "
@@ -1740,6 +1747,10 @@ def cmd_history(argv: Sequence[str]) -> int:
                 raise SlurpyError("the month window must be at least 1")
         elif token.isdigit() and int(token) < HISTORY_COUNT_LIMIT:
             count = int(token)
+            if count < 1:
+                raise SlurpyError(
+                    "the job count must be at least 1, e.g. slurpy hist 10"
+                )
         elif re.fullmatch(r"\d+(_\d+)?", token):
             ids.append(token)
         else:
@@ -1871,6 +1882,7 @@ def _submission_lock(output_dir: Path) -> Iterator[None]:
 
 
 def cmd_submit(software_name: str, argv: Sequence[str]) -> int:
+    """Validate, render, and submit one job or one array."""
     args = build_submit_parser(software_name).parse_args(list(argv))
     if args.variant:
         software_name = f"{software_name}-{args.variant}"
@@ -1940,6 +1952,7 @@ def build_salloc_command(
 
 
 def cmd_interactive(argv: Sequence[str]) -> int:
+    """Open an interactive shell on a compute node via salloc."""
     parser = argparse.ArgumentParser(
         prog="slurpy int",
         description="interactive shell on a compute node",
@@ -1968,6 +1981,7 @@ def cmd_interactive(argv: Sequence[str]) -> int:
 
 
 def cmd_list() -> int:
+    """Show the config search path and the available software."""
     search_path = resolve_search_path()
     print("config search path:")
     for index, directory in enumerate(search_path, start=1):
@@ -1994,6 +2008,7 @@ def cmd_list() -> int:
 
 
 def cmd_link(argv: Sequence[str]) -> int:
+    """Create shorthand symlinks such as sorca and sq."""
     parser = argparse.ArgumentParser(
         prog="slurpy link",
         description=("create shorthand symlinks so that e.g. sorca means slurpy orca"),
@@ -2001,7 +2016,7 @@ def cmd_link(argv: Sequence[str]) -> int:
     parser.add_argument(
         "software",
         nargs="*",
-        help="software to link (default: all available, plus int)",
+        help="software to link (default: all available, plus int and q)",
     )
     parser.add_argument("--dir", default="~/bin", help="directory for the symlinks")
     args = parser.parse_args(list(argv))
@@ -2055,7 +2070,8 @@ INIT_SLURPY_TOML = """\
 # directories searched for configs, in order. first match wins. add your
 # own directory or shared group directories, for example:
 # search_path = ["~/my-configs", "~/.config/slurpy", "/software/mygroup/slurpy"]
-# when unset, ~/.config/slurpy and ~/bin are searched.
+# when unset, ~/.config/slurpy and ~/bin are searched. note that
+# search_path only takes effect in ~/.config/slurpy/slurpy.toml.
 # search_path = ["~/.config/slurpy", "~/bin"]
 
 [defaults]
@@ -2125,6 +2141,7 @@ export OMP_NUM_THREADS={cpus}
 #   {stem}       input filename without its extension
 #   {output_dir} the output directory
 #   {scratch}    scratch directory (only when scratch = true)
+#   {secondary} {secondary_path}  the paired file (secondary_extensions)
 #   {cpus} {ntasks} {nodes} {memory_gb} {launcher}
 #   plus every key from [paths]
 command = '"{my_program}" "{input}" > "{output_dir}/{stem}.out"'
@@ -2134,6 +2151,8 @@ scratch = false
 archive = false
 # file extensions copied back from scratch to output/.
 retrieve = []
+# default program for {launcher}, overridable with --launcher.
+# launcher = "bash"
 
 # [slurm]
 # exclude nodes, either inline or from a file with one node per line.
@@ -2177,6 +2196,7 @@ def _write_bootstrap_pointer(chosen_dir: Path) -> None:
 
 
 def cmd_init(argv: Sequence[str]) -> int:
+    """Scaffold a config directory with commented templates."""
     parser = argparse.ArgumentParser(
         prog="slurpy init",
         description="create a config directory with commented templates",
