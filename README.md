@@ -37,10 +37,19 @@ paths for your cluster.
 slurpy orca     [options] input.inp  [input2.inp ...]
 slurpy gaussian [options] input.com  [input2.com ...]
 slurpy gpaw     [options] script.py  [script2.py ...]
+slurpy python   [options] script.py  [script2.py ...]
+slurpy cfour    [options] input.inp  [input2.inp ...]
+slurpy dalton   [options] calc.dal geom.mol [geom2.mol ...]
+slurpy dirac    [options] calc.inp geom.mol [calc2.inp geom2.mol ...]
 slurpy exec     [options] script.sh  [script2.sh ...]
 slurpy int      [options]            # interactive shell on a compute node
 slurpy list                          # available software and config paths
 ```
+
+Dalton and DIRAC take paired inputs, calculation file first. One
+calculation file with several geometry files submits an array with one
+pair per task, and alternating pairs work too. Results are named
+`<calc>-<geom>`.
 
 Or via the shorthand symlinks after `slurpy link`:
 
@@ -77,12 +86,52 @@ Use `-h` for an overview of flags
     --dependency STR        slurm dependency, e.g. afterok:12345
     --launcher CMD          program that runs the input (exec-style configs)
     --variant NAME          software variant
+    --set KEY=VALUE         override a [paths] value for this submission
+    --inject-resources      rewrite cpu/memory directives in a staged copy
+                            of the input to match -c and -m
     --no-archive            skip the scratch archive
     --dry-run               print the script, do not submit
 ```
 
 Defaults come from the software config, then `slurpy.toml`, then built-in
 fallbacks.
+
+`--inject-resources` makes the resource lines inside the input file
+(`%pal`/`%maxcore` for ORCA, `%nprocshared`/`%mem` for Gaussian) match
+`-c` and `-m`. The edit happens in a staged copy under `.slurpy-staged/`,
+the original file is never touched, and conflicting duplicate lines abort
+with an error. Off by default.
+
+## Slurm commands
+
+Queue, job, and partition helpers, so the whole slurm day fits in one
+tool. Add `--record [FILE]` to any info command to write its output to a
+timestamped file instead of the terminal.
+
+```
+slurpy q                     your queue
+slurpy qwp chem              watch your queue on one partition
+slurpy qa                    everyone's jobs
+slurpy qu NAME               another user's queue
+slurpy qj 12345 opt-run      only these jobs, by id or name
+slurpy p [NAME ...]          partition overview
+slurpy p up                  partition and node availability
+slurpy p permission          detect and store the partitions you may use
+slurpy hist                  your last 10 finished jobs with cpu and
+                             memory efficiency
+slurpy hist 25               last 25
+slurpy hist 10..20           jobs 10 through 20, 1 = newest
+slurpy hist 3month           usage summary for the last 3 months
+slurpy cancel ID|NAME ...    cancel jobs (asks before name matches)
+slurpy hold ID ...           hold, and slurpy release to let go
+slurpy mod ID key=value      change a submitted job: throttle, nice,
+                             time, dependency (e.g. dependency=afterok:ID)
+```
+
+`q` modifiers stack in any order (`w` watch, `p` partition, `a` all,
+`u` user, `j` jobs), and the long forms `slurpy queue --watch
+--partition chem` work too. After `slurpy link`, `sq` is a shorthand for
+`slurpy q`.
 
 ## Configuration
 
@@ -121,6 +170,7 @@ max_cpus = 64            # optional guard rails
 ```toml
 [software]
 extensions = [".inp"]
+# secondary_extensions = [".mol"]   # paired inputs (dalton, dirac)
 
 [paths]
 orca_dir = "/path/to/orca"
@@ -136,6 +186,12 @@ command = '"{orca_dir}/orca" "{input}" > "{output_dir}/{stem}.out"'
 scratch = true
 archive = true
 retrieve = ["gbw", "xyz"]
+
+[inject]                            # optional, used by --inject-resources
+memory_fraction = 0.75
+rules = [
+  { match = '(?im)^%maxcore\s+\d+\s*$', write = '%maxcore {inject_memory_mb_per_cpu}' },
+]
 ```
 
 Jobs start with a clean environment (`--export=NONE`); everything the
@@ -153,6 +209,19 @@ retrieves `.chk`; archives the scratch.
 
 **gpaw** - input `.py`, runs via `mpirun` with `OPENBLAS_NUM_THREADS=1`.
 No scratch.
+
+**dalton** - paired `.dal` + `.mol`, picks the 64-bit integer build above
+16 GB, sets `DALTON_TMPDIR`. `dalton-embedded` for dal files with the
+geometry inside.
+
+**dirac** - paired `.inp` + `.mol` via the `pam` driver, per-process
+memory capped at the fair share with 4/5 as working memory.
+
+**cfour** - input `.inp`, copies binaries and `GENBAS` into scratch under
+a lock. Override the basis with `--set genbas=FILE`.
+
+**python** - input `.py`, sets `OMP_NUM_THREADS`. Copy to
+`python-<env>.toml` with an activation line for each environment.
 
 **exec** - runs any script via a launcher (`bash` by default, override
 with `--launcher python3`). No scratch.

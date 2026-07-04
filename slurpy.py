@@ -30,7 +30,7 @@ from contextlib import contextmanager
 from dataclasses import dataclass
 from pathlib import Path
 
-__version__ = "0.1.0"
+__version__ = "0.2.0"
 
 CONFIG_PATH_ENV = "SLURPY_CONFIG_PATH"
 # Fixed bootstrap location. Users pick any config directory they like with
@@ -2069,6 +2069,10 @@ scratch_base = "/scratch"
 # reject jobs above these limits before they reach slurm.
 # max_cpus = 64
 # max_memory_gb = 500
+
+# partitions shown by "slurpy p", detected and kept current by
+# "slurpy p permission". all partitions when unset.
+# partitions = ["chem", "compchem"]
 """
 
 INIT_EXEC_TOML = """\
@@ -2088,6 +2092,9 @@ INIT_EXAMPLE_TOML = """\
 [software]
 # accepted input extensions. empty or omitted means accept any file.
 extensions = [".in"]
+# paired-input software (dalton, dirac) also takes geometry files, one
+# job per (calculation, geometry) pair, available as {secondary}.
+# secondary_extensions = [".mol"]
 
 [resources]
 # defaults for this software, override the site defaults in slurpy.toml.
@@ -2135,6 +2142,17 @@ retrieve = []
 # exclude = "node001,node002"
 # exclude_file = "/path/to/exclude-list.txt"
 # exclude_partition = "chem"
+
+# [inject]
+# used by --inject-resources: make resource directives in a staged copy
+# of the input match -c and -m. one match is edited in place, no match
+# inserts the line at the top, several matches abort.
+# memory_fraction is the share of the allocation given to the program,
+# exposed as {inject_memory_mb} and {inject_memory_mb_per_cpu}.
+# memory_fraction = 0.75
+# rules = [
+#   { match = '(?im)^%maxcore\\s+\\d+\\s*$', write = '%maxcore {inject_memory_mb_per_cpu}' },
+# ]
 """
 
 

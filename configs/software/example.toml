@@ -4,6 +4,10 @@
 [software]
 # accepted input extensions. empty or omitted means accept any file.
 extensions = [".in"]
+# paired-input software (dalton, dirac) also takes geometry files.
+# every job is then one (calculation, geometry) pair, and {secondary}
+# holds the geometry file in setup and command.
+# secondary_extensions = [".mol"]
 
 [resources]
 # defaults for this software, override the site defaults in slurpy.toml.
@@ -51,3 +55,14 @@ retrieve = []
 # exclude = "node001,node002"
 # exclude_file = "/path/to/exclude-list.txt"
 # exclude_partition = "chem"
+
+# [inject]
+# used by --inject-resources: make resource directives in a staged copy
+# of the input match -c and -m. one match is edited in place, no match
+# inserts the line at the top, several matches abort.
+# memory_fraction is the share of the allocation given to the program.
+# extra placeholders: {inject_memory_mb} and {inject_memory_mb_per_cpu}.
+# memory_fraction = 0.75
+# rules = [
+#   { match = '(?im)^%maxcore\s+\d+\s*$', write = '%maxcore {inject_memory_mb_per_cpu}' },
+# ]

@@ -1,5 +1,17 @@
 # changelog
 
+## 0.2.0
+
+- paired inputs via secondary_extensions, for dalton and dirac
+- new software configs: dalton, dalton-embedded, dirac, cfour, python
+- --set key=value overrides [paths] values per submission
+- --inject-resources rewrites cpu/memory directives in staged input copies
+- slurm commands: q/queue with stacking modifiers, p/partition with up and
+  permission views, hist/history with ranges and monthly usage summaries,
+  cancel, hold, release, mod/modify
+- --record writes info command output to a timestamped file
+- partitions key in slurpy.toml, maintained by "slurpy p permission"
+
 ## 0.1.0
 
 - initial release

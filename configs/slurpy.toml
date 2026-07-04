@@ -17,3 +17,7 @@ scratch_base = "/scratch"
 # reject jobs above these limits before they reach slurm.
 # max_cpus = 64
 # max_memory_gb = 500
+
+# partitions shown by "slurpy p", detected and kept current by
+# "slurpy p permission". all partitions when unset.
+# partitions = ["chem", "compchem"]
