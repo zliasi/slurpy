@@ -16,9 +16,12 @@ from __future__ import annotations
 
 import argparse
 import dataclasses
+import datetime
 import fcntl
+import getpass
 import os
 import re
+import shlex
 import subprocess
 import sys
 import tomllib
@@ -42,8 +45,51 @@ SBATCH_TIMEOUT_SECONDS = 60
 # Built-in commands. A software config with one of these names can never be
 # submitted, so list and link point that out.
 RESERVED_COMMANDS = frozenset(
-    {"help", "init", "int", "interactive", "link", "list", "version"}
+    {
+        "help",
+        "init",
+        "int",
+        "interactive",
+        "link",
+        "list",
+        "version",
+        "q",
+        "queue",
+        "p",
+        "partition",
+        "hist",
+        "history",
+        "cancel",
+        "hold",
+        "release",
+        "mod",
+        "modify",
+    }
 )
+
+QUEUE_MODIFIERS = "wpauj"
+# Column layouts proven in daily use (the old sq/pinfo aliases).
+QUEUE_FORMAT = "%8i %15P %16R %4C %10m %4y %12p %7T %12M %j"
+PARTITION_FORMAT = "%15P %9T %13l %13e %15C %15G %14F"
+PARTITION_UP_FORMAT = "%15P %10a %12T %6D %30E"
+# States sacct reports for jobs that are over.
+FINISHED_STATES = (
+    "COMPLETED",
+    "FAILED",
+    "CANCELLED",
+    "TIMEOUT",
+    "OUT_OF_MEMORY",
+    "NODE_FAIL",
+    "PREEMPTED",
+)
+MODIFY_KEYS = {
+    "throttle": "ArrayTaskThrottle",
+    "nice": "Nice",
+    "time": "TimeLimit",
+    "dependency": "Dependency",
+}
+# Numbers below this are "last N jobs" counts, above are job ids.
+HISTORY_COUNT_LIMIT = 10000
 
 # Slurm time formats: MM, MM:SS, HH:MM:SS, D-HH, D-HH:MM, D-HH:MM:SS.
 TIME_LIMIT_RE = re.compile(r"^\d+(-\d{1,2})?(:\d{2})?(:\d{2})?$")
@@ -81,26 +127,39 @@ SACCT_LINE = (
 HELP_TEXT = f"""\
 slurpy {__version__}: submit computational chemistry jobs to slurm.
 
-usage:
+submit:
   slurpy <software> [options] <input> [<input> ...]
-  slurpy int [options]
-  slurpy list
-  slurpy link [<software> ...] [--dir DIR]
-  slurpy init [--dir DIR]
+  slurpy int [options]              interactive shell on a compute node
 
-commands:
-  <software>   submit using the <software>.toml config
-  int          interactive shell on a compute node (salloc)
-  list         show the config search path and available software
-  link         create shorthand symlinks (sorca, sgaussian, ...) in ~/bin
-  init         create a config directory (default ~/.config/slurpy)
+slurm info (--record [FILE] writes the output to a file):
+  slurpy q [ARGS]                   your queue. modifiers stack:
+                                      w watch      p partition ARG
+                                      a all users  u user ARG
+                                      j job ids or names ARGS
+                                    e.g. slurpy qwp chem, slurpy qj 12345
+  slurpy p [NAME ...]               partition overview (p = partition)
+  slurpy p up                       partition and node availability
+  slurpy p permission               detect and store the partitions you
+                                    may use
+  slurpy hist [N | A..B | Xmonth | ID|NAME ...]
+                                    finished jobs, 1 = newest. Xmonth
+                                    gives a usage summary
+
+job control:
+  slurpy cancel <ID|NAME> ...
+  slurpy hold <ID|NAME> ...         slurpy release <ID|NAME> ...
+  slurpy mod <ID> key=value ...     keys: throttle, nice, time, dependency
+
+setup:
+  slurpy list                       available software and config paths
+  slurpy link [--dir DIR]           shorthand symlinks (sorca, sq, ...)
+  slurpy init [--dir DIR]           create a config directory
 
 examples:
   slurpy orca h2o.inp
   slurpy orca *.inp -c 8 -m 16 -t 1-00:00:00
-  slurpy gpaw relax.py -n 24
+  slurpy dalton hf.dal water.mol
   slurpy exec analysis.py --launcher python3
-  slurpy orca-dev h2o.inp
 
 multiple inputs always become one throttled slurm array, never separate
 jobs. run "slurpy <software> --help" for all submission options."""
@@ -248,7 +307,7 @@ def load_site_defaults(search_path: Sequence[Path]) -> SiteDefaults:
         if not path.is_file():
             continue
         data = _load_toml(path)
-        _check_keys(data, ("search_path", "defaults"), "top level", path)
+        _check_keys(data, ("search_path", "defaults", "partitions"), "top level", path)
         defaults = _get_table(data, "defaults", path)
         _check_keys(defaults, _DEFAULTS_KEYS, "[defaults]", path)
         for key in _DEFAULTS_INT_KEYS:
@@ -1005,6 +1064,595 @@ def submit_script(script: str) -> str:
     return stdout.split()[-1]
 
 
+def _run_slurm(command: Sequence[str]) -> str:
+    """Run a slurm client command and return its stdout."""
+    try:
+        result = subprocess.run(
+            list(command), text=True, capture_output=True, check=False
+        )
+    except FileNotFoundError as error:
+        raise SlurpyError(
+            f"{command[0]} not found. this command needs slurm, run it on "
+            "the cluster"
+        ) from error
+    if result.returncode != 0:
+        detail = result.stderr.strip() or result.stdout.strip()
+        raise SlurpyError(f"{command[0]} failed: {detail}")
+    return result.stdout
+
+
+def _add_record_flag(parser: argparse.ArgumentParser) -> None:
+    parser.add_argument(
+        "--record",
+        nargs="?",
+        const="",
+        default=None,
+        metavar="FILE",
+        help="write the output to a file instead of the terminal",
+    )
+
+
+def _deliver(kind: str, text: str, record: str | None) -> None:
+    """Print the output, or write it to a record file with a header."""
+    if record is None:
+        print(text.rstrip("\n"))
+        return
+    now = datetime.datetime.now()
+    if record:
+        path = Path(record).expanduser()
+    else:
+        path = Path(f"slurpy-{kind}-{now.strftime('%Y%m%d-%H%M%S')}.txt")
+    header = (
+        f"# slurpy {kind}\n"
+        f"# {now.isoformat(timespec='seconds')}\n"
+        f"# {' '.join(sys.argv)}\n\n"
+    )
+    path.write_text(header + text.rstrip("\n") + "\n")
+    print(f"wrote {path}")
+
+
+def _take_argument(positionals: list[str], what: str, example: str) -> str:
+    if not positionals:
+        raise SlurpyError(f"the {what} modifier needs a value, e.g. slurpy {example}")
+    return positionals.pop(0)
+
+
+def _split_job_selectors(tokens: Sequence[str]) -> tuple[list[str], list[str]]:
+    """Split job selectors into numeric ids and names."""
+    ids = [t for t in tokens if re.fullmatch(r"\d+(_\d+)?", t)]
+    names = [t for t in tokens if t not in ids]
+    return ids, names
+
+
+def cmd_queue(modifiers: str, argv: Sequence[str]) -> int:
+    parser = argparse.ArgumentParser(
+        prog="slurpy queue", description="show the job queue"
+    )
+    parser.add_argument("args", nargs="*", metavar="ARG")
+    parser.add_argument("-w", "--watch", action="store_true")
+    parser.add_argument("-p", "--partition")
+    parser.add_argument("-a", "--all", dest="all_users", action="store_true")
+    parser.add_argument("-u", "--user")
+    parser.add_argument("-j", "--job", dest="jobs", action="append", default=None)
+    _add_record_flag(parser)
+    args = parser.parse_args(list(argv))
+
+    unknown = sorted(set(modifiers) - set(QUEUE_MODIFIERS))
+    if unknown:
+        raise SlurpyError(
+            f'unknown queue modifier "{unknown[0]}". available: '
+            f"{', '.join(QUEUE_MODIFIERS)} (watch, partition, all, user, job)"
+        )
+    positionals = list(args.args)
+    watch = args.watch or "w" in modifiers
+    all_users = args.all_users or "a" in modifiers
+    partition = args.partition
+    user = args.user
+    jobs: list[str] = list(args.jobs or [])
+    for letter in modifiers:
+        if letter == "p" and partition is None:
+            partition = _take_argument(positionals, "partition (p)", "qp chem")
+        elif letter == "u" and user is None:
+            user = _take_argument(positionals, "user (u)", "qu somebody")
+        elif letter == "j":
+            if not positionals and not jobs:
+                raise SlurpyError(
+                    "the job modifier (j) needs at least one job id or "
+                    "name, e.g. slurpy qj 12345"
+                )
+            jobs += positionals
+            positionals = []
+    if positionals:
+        raise SlurpyError(
+            f'unexpected argument "{positionals[0]}". to filter by job, '
+            "use the j modifier, e.g. slurpy qj NAME"
+        )
+
+    command = ["squeue", "-o", QUEUE_FORMAT]
+    if user is not None:
+        command += ["-u", user]
+    elif not all_users:
+        command += ["-u", getpass.getuser()]
+    if partition is not None:
+        command += ["-p", partition]
+    if jobs:
+        ids, names = _split_job_selectors(jobs)
+        if ids and names:
+            raise SlurpyError(
+                "give either job ids or job names to the j modifier, " "not both"
+            )
+        if ids:
+            command += ["-j", ",".join(ids)]
+        else:
+            command.append(f"--name={','.join(names)}")
+
+    if watch:
+        if args.record is not None:
+            raise SlurpyError("--record cannot be combined with watch")
+        # watch(1) joins its arguments and runs them through sh -c.
+        watch_command = ["watch", "-n", "30", shlex.join(command)]
+        try:
+            os.execvp("watch", watch_command)
+        except OSError as error:
+            raise SlurpyError("watch not found on this machine") from error
+    _deliver("queue", _run_slurm(command), args.record)
+    return 0
+
+
+def load_partitions() -> tuple[str, ...]:
+    """Read the partitions key from the bootstrap or any search dir."""
+    candidates = [Path(USER_CONFIG_DIR).expanduser() / "slurpy.toml"]
+    candidates += [d / "slurpy.toml" for d in resolve_search_path()]
+    for path in candidates:
+        if not path.is_file():
+            continue
+        listed = _get_str_list(_load_toml(path), "partitions", "top level", path)
+        if listed:
+            return listed
+    return ()
+
+
+def _detect_permitted_partitions() -> list[str]:
+    """Partitions whose AllowGroups match the user's unix groups."""
+    groups = set(_run_slurm(["id", "-Gn"]).split())
+    text = _run_slurm(["scontrol", "show", "partition", "-o"])
+    permitted: list[str] = []
+    for line in text.splitlines():
+        fields = dict(item.split("=", 1) for item in line.split() if "=" in item)
+        name = fields.get("PartitionName")
+        if not name:
+            continue
+        allowed = fields.get("AllowGroups", "ALL")
+        if allowed == "ALL" or set(allowed.split(",")) & groups:
+            permitted.append(name)
+    return permitted
+
+
+def _write_partitions(partitions: Sequence[str]) -> Path:
+    """Set the partitions key in the user's bootstrap slurpy.toml."""
+    path = Path(USER_CONFIG_DIR).expanduser() / "slurpy.toml"
+    formatted = "partitions = [" + ", ".join(f'"{p}"' for p in partitions) + "]"
+    if path.is_file():
+        text = path.read_text()
+        pattern = re.compile(r"^partitions\s*=.*$", re.M)
+        if pattern.search(text):
+            text = pattern.sub(formatted, text, count=1)
+        else:
+            text = (
+                text.rstrip("\n")
+                + '\n\n# partitions you may use, from "slurpy p permission".\n'
+                + formatted
+                + "\n"
+            )
+    else:
+        path.parent.mkdir(parents=True, exist_ok=True)
+        text = '# created by "slurpy p permission".\n' + formatted + "\n"
+    path.write_text(text)
+    return path
+
+
+def cmd_partition(argv: Sequence[str]) -> int:
+    parser = argparse.ArgumentParser(
+        prog="slurpy partition",
+        description="partition overview, availability, or permission check",
+    )
+    parser.add_argument(
+        "names",
+        nargs="*",
+        metavar="NAME",
+        help='partition names, "up" for availability, "permission" to '
+        "detect and store the partitions you may use",
+    )
+    _add_record_flag(parser)
+    args = parser.parse_args(list(argv))
+
+    if "permission" in args.names:
+        if len(args.names) > 1:
+            raise SlurpyError('use "slurpy p permission" on its own')
+        permitted = _detect_permitted_partitions()
+        if not permitted:
+            raise SlurpyError(
+                "no permitted partitions detected. check scontrol show "
+                "partition manually"
+            )
+        path = _write_partitions(permitted)
+        print(f"permitted partitions: {', '.join(permitted)}")
+        print(f"updated {path}")
+        return 0
+
+    up_view = "up" in args.names
+    explicit = [name for name in args.names if name != "up"]
+    partitions = tuple(explicit) or load_partitions()
+    command = ["sinfo"]
+    if partitions:
+        command += ["-p", ",".join(partitions)]
+    command += ["-o", PARTITION_UP_FORMAT if up_view else PARTITION_FORMAT]
+    _deliver("partition", _run_slurm(command), args.record)
+    return 0
+
+
+def _resolve_job_names(names: Sequence[str]) -> list[tuple[str, str]]:
+    """Map job names to (id, name) pairs via the user's queue."""
+    out = _run_slurm(
+        [
+            "squeue",
+            "-h",
+            "-u",
+            getpass.getuser(),
+            f"--name={','.join(names)}",
+            "-o",
+            "%i %j",
+        ]
+    )
+    matches: list[tuple[str, str]] = []
+    for line in out.splitlines():
+        parts = line.split(None, 1)
+        if len(parts) == 2:
+            matches.append((parts[0], parts[1]))
+    if not matches:
+        raise SlurpyError(
+            f"no jobs of yours match name(s): {', '.join(names)}. "
+            'run "slurpy q" to see the queue'
+        )
+    return matches
+
+
+def _gather_job_ids(targets: Sequence[str], action: str, assume_yes: bool) -> list[str]:
+    """Turn id/name targets into job ids, confirming name matches."""
+    ids, names = _split_job_selectors(targets)
+    if names:
+        matches = _resolve_job_names(names)
+        for job_id, job_name in matches:
+            print(f"  {job_id}  {job_name}")
+        if not assume_yes:
+            if not sys.stdin.isatty():
+                raise SlurpyError(
+                    f"confirmation needed to {action} jobs matched by "
+                    "name. add --yes"
+                )
+            answer = input(f"{action} {len(matches)} job(s)? [y/N] ")
+            if answer.strip().lower() not in ("y", "yes"):
+                print("aborted")
+                return []
+        ids += [job_id for job_id, _ in matches]
+    return ids
+
+
+def cmd_cancel(argv: Sequence[str]) -> int:
+    parser = argparse.ArgumentParser(
+        prog="slurpy cancel", description="cancel jobs by id or name"
+    )
+    parser.add_argument("targets", nargs="+", metavar="ID|NAME")
+    parser.add_argument("-y", "--yes", action="store_true")
+    args = parser.parse_args(list(argv))
+    ids = _gather_job_ids(args.targets, "cancel", args.yes)
+    if not ids:
+        return 1
+    _run_slurm(["scancel", *ids])
+    print(f"cancelled: {', '.join(ids)}")
+    return 0
+
+
+def cmd_hold_release(argv: Sequence[str], action: str) -> int:
+    parser = argparse.ArgumentParser(
+        prog=f"slurpy {action}", description=f"{action} jobs by id or name"
+    )
+    parser.add_argument("targets", nargs="+", metavar="ID|NAME")
+    parser.add_argument("-y", "--yes", action="store_true")
+    args = parser.parse_args(list(argv))
+    ids = _gather_job_ids(args.targets, action, args.yes)
+    if not ids:
+        return 1
+    _run_slurm(["scontrol", action, ",".join(ids)])
+    print(f"{action}: {', '.join(ids)}")
+    return 0
+
+
+def cmd_modify(argv: Sequence[str]) -> int:
+    parser = argparse.ArgumentParser(
+        prog="slurpy mod",
+        description="change settings of a submitted job",
+    )
+    parser.add_argument("job_id", metavar="ID")
+    parser.add_argument(
+        "settings",
+        nargs="+",
+        metavar="KEY=VALUE",
+        help=f"keys: {', '.join(sorted(MODIFY_KEYS))}",
+    )
+    args = parser.parse_args(list(argv))
+    if not re.fullmatch(r"\d+(_\d+)?", args.job_id):
+        raise SlurpyError(
+            f'"{args.job_id}" is not a job id. slurpy mod takes one ' "numeric job id"
+        )
+    updates: list[str] = []
+    for item in args.settings:
+        key, separator, value = item.partition("=")
+        if not separator or not value:
+            raise SlurpyError(f'invalid setting "{item}". use key=value')
+        field = MODIFY_KEYS.get(key)
+        if field is None:
+            raise SlurpyError(
+                f'unknown setting "{key}". available: '
+                f"{', '.join(sorted(MODIFY_KEYS))}"
+            )
+        if key == "time" and not TIME_LIMIT_RE.fullmatch(value):
+            raise SlurpyError(
+                f'invalid time "{value}". use D-HH:MM:SS, HH:MM:SS, or MM'
+            )
+        updates.append(f"{field}={value}")
+    _run_slurm(["scontrol", "update", f"JobId={args.job_id}", *updates])
+    print(f"updated {args.job_id}: {' '.join(updates)}")
+    return 0
+
+
+def _duration_seconds(text: str) -> float:
+    """Parse slurm durations: [D-]HH:MM:SS[.frac], MM:SS, or empty."""
+    text = text.strip()
+    if not text or ":" not in text:
+        return 0.0
+    days = 0
+    if "-" in text:
+        day_part, text = text.split("-", 1)
+        days = int(day_part)
+    seconds = 0.0
+    for part in text.split(":"):
+        seconds = seconds * 60 + float(part)
+    return days * 86400 + seconds
+
+
+def _memory_mb(text: str, alloc_cpus: int) -> float:
+    """Parse slurm memory values like 1234K, 16G, 4Gc, 16Gn, or bytes."""
+    text = text.strip()
+    if not text:
+        return 0.0
+    per_cpu = False
+    if text[-1] in "nc":
+        per_cpu = text[-1] == "c"
+        text = text[:-1]
+    factor = {"K": 1 / 1024, "M": 1.0, "G": 1024.0, "T": 1024.0 * 1024.0}
+    if text and text[-1] in factor:
+        try:
+            value = float(text[:-1]) * factor[text[-1]]
+        except ValueError:
+            return 0.0
+    else:
+        try:
+            value = float(text) / (1024.0 * 1024.0)
+        except ValueError:
+            return 0.0
+    if per_cpu:
+        value *= max(alloc_cpus, 1)
+    return value
+
+
+@dataclass(frozen=True)
+class FinishedJob:
+    """One finished job assembled from sacct allocation and step rows."""
+
+    job_id: str
+    name: str
+    state: str
+    elapsed_seconds: float
+    cpu_seconds: float
+    alloc_cpus: int
+    requested_mb: float
+    max_rss_mb: float
+    end: str
+    exit_code: str
+
+    @property
+    def cpu_efficiency(self) -> float:
+        denominator = self.elapsed_seconds * max(self.alloc_cpus, 1)
+        return self.cpu_seconds / denominator if denominator else 0.0
+
+    @property
+    def memory_efficiency(self) -> float:
+        if not self.requested_mb:
+            return 0.0
+        return self.max_rss_mb / self.requested_mb
+
+
+def _fetch_history(since: datetime.date, ids: Sequence[str]) -> list[FinishedJob]:
+    """Finished jobs from sacct, newest first."""
+    command = [
+        "sacct",
+        "-u",
+        getpass.getuser(),
+        "-n",
+        "-P",
+        f"--starttime={since.isoformat()}",
+        "--format=JobID,JobName,State,Elapsed,TotalCPU,AllocCPUS,"
+        "ReqMem,MaxRSS,End,ExitCode",
+    ]
+    if ids:
+        command.append(f"--jobs={','.join(ids)}")
+    rows = [
+        line.split("|") for line in _run_slurm(command).splitlines() if line.strip()
+    ]
+    jobs: dict[str, FinishedJob] = {}
+    order: list[str] = []
+    for row in rows:
+        if len(row) < 10:
+            continue
+        job_id, name, state, elapsed, cpu, cpus, req, rss, end, exit_code = row[:10]
+        base_id = job_id.split(".", 1)[0]
+        alloc_cpus = int(cpus) if cpus.isdigit() else 1
+        if "." not in job_id:
+            if not any(state.startswith(s) for s in FINISHED_STATES):
+                continue
+            jobs[base_id] = FinishedJob(
+                job_id=base_id,
+                name=name,
+                state=state,
+                elapsed_seconds=_duration_seconds(elapsed),
+                cpu_seconds=_duration_seconds(cpu),
+                alloc_cpus=alloc_cpus,
+                requested_mb=_memory_mb(req, alloc_cpus),
+                max_rss_mb=0.0,
+                end=end,
+                exit_code=exit_code,
+            )
+            order.append(base_id)
+        elif base_id in jobs:
+            # steps carry MaxRSS, the allocation row does not.
+            step_rss = _memory_mb(rss, alloc_cpus)
+            job = jobs[base_id]
+            if step_rss > job.max_rss_mb:
+                jobs[base_id] = dataclasses.replace(job, max_rss_mb=step_rss)
+    return [jobs[job_id] for job_id in reversed(order)]
+
+
+def _format_mb(value: float) -> str:
+    if value >= 1024:
+        return f"{value / 1024:.1f}G"
+    return f"{value:.0f}M"
+
+
+def _format_hours(seconds: float) -> str:
+    return f"{seconds / 3600:.1f}h"
+
+
+def _history_table(jobs: Sequence[FinishedJob], first_index: int) -> str:
+    lines = [
+        f"{'#':>4} {'jobid':<10} {'name':<16} {'state':<11} "
+        f"{'elapsed':>11} {'cpu%':>5} {'mem':>8} {'req':>8} {'mem%':>5} "
+        f"{'exit':>5} {'end':<19}"
+    ]
+    for index, job in enumerate(jobs, start=first_index):
+        elapsed = job.elapsed_seconds
+        hours, rest = divmod(int(elapsed), 3600)
+        minutes, seconds = divmod(rest, 60)
+        lines.append(
+            f"{index:>4} {job.job_id:<10} {job.name[:16]:<16} "
+            f"{job.state.split()[0][:11]:<11} "
+            f"{f'{hours}:{minutes:02d}:{seconds:02d}':>11} "
+            f"{job.cpu_efficiency:>5.0%} {_format_mb(job.max_rss_mb):>8} "
+            f"{_format_mb(job.requested_mb):>8} "
+            f"{job.memory_efficiency:>5.0%} {job.exit_code:>5} "
+            f"{job.end[:19]:<19}"
+        )
+    return "\n".join(lines) + "\n"
+
+
+def _history_summary(jobs: Sequence[FinishedJob], months: int) -> str:
+    total = len(jobs)
+    if total == 0:
+        return f"no finished jobs in the last {months} month(s)\n"
+    completed = sum(1 for job in jobs if job.state.startswith("COMPLETED"))
+    wall = sum(job.elapsed_seconds for job in jobs)
+    cpu = sum(job.cpu_seconds for job in jobs)
+    cpu_eff = sum(job.cpu_efficiency for job in jobs) / total
+    with_memory = [job for job in jobs if job.requested_mb]
+    mem_eff = (
+        sum(job.memory_efficiency for job in with_memory) / len(with_memory)
+        if with_memory
+        else 0.0
+    )
+    return (
+        f"usage over the last {months} month(s)\n"
+        f"\n"
+        f"jobs:          {total}\n"
+        f"completed:     {completed} ({completed / total:.0%})\n"
+        f"other states:  {total - completed}\n"
+        f"wall time:     {_format_hours(wall)}\n"
+        f"cpu time:      {_format_hours(cpu)}\n"
+        f"mean cpu eff:  {cpu_eff:.0%}\n"
+        f"mean mem eff:  {mem_eff:.0%}\n"
+    )
+
+
+def cmd_history(argv: Sequence[str]) -> int:
+    parser = argparse.ArgumentParser(
+        prog="slurpy hist",
+        description="finished jobs: recent list, range, ids, or Xmonth "
+        "usage summary",
+    )
+    parser.add_argument(
+        "selectors",
+        nargs="*",
+        metavar="N | A..B | Xmonth | ID|NAME",
+        help="1 is the newest finished job",
+    )
+    _add_record_flag(parser)
+    args = parser.parse_args(list(argv))
+
+    today = datetime.date.today()
+    count: int | None = None
+    job_range: tuple[int, int] | None = None
+    months: int | None = None
+    ids: list[str] = []
+    names: list[str] = []
+    for token in args.selectors:
+        range_match = re.fullmatch(r"(\d+)\.\.(\d+)", token)
+        month_match = re.fullmatch(r"(\d+)month", token)
+        if range_match:
+            job_range = (int(range_match.group(1)), int(range_match.group(2)))
+            if job_range[0] < 1 or job_range[0] > job_range[1]:
+                raise SlurpyError(
+                    f'invalid range "{token}". use A..B with 1 <= A <= B, '
+                    "1 is the newest job"
+                )
+        elif month_match:
+            months = int(month_match.group(1))
+            if months < 1:
+                raise SlurpyError("the month window must be at least 1")
+        elif token.isdigit() and int(token) < HISTORY_COUNT_LIMIT:
+            count = int(token)
+        elif re.fullmatch(r"\d+(_\d+)?", token):
+            ids.append(token)
+        else:
+            names.append(token)
+
+    if months is not None:
+        since = today - datetime.timedelta(days=30 * months)
+        jobs = _fetch_history(since, [])
+        _deliver("history", _history_summary(jobs, months), args.record)
+        return 0
+
+    since = today - datetime.timedelta(days=365)
+    jobs = _fetch_history(since, ids)
+    if names:
+        wanted = set(names)
+        jobs = [job for job in jobs if job.name in wanted]
+    first_index = 1
+    if ids or names:
+        pass
+    elif job_range is not None:
+        start, stop = job_range
+        jobs = jobs[start - 1 : stop]
+        first_index = start
+    else:
+        jobs = jobs[: count if count is not None else 10]
+    if not jobs:
+        raise SlurpyError(
+            "no finished jobs matched. sacct only reaches back one year "
+            "here, and slurm accounting retention may be shorter"
+        )
+    _deliver("history", _history_table(jobs, first_index), args.record)
+    return 0
+
+
 def _positive_int(text: str) -> int:
     try:
         value = int(text)
@@ -1235,14 +1883,14 @@ def cmd_link(argv: Sequence[str]) -> int:
     else:
         # a reserved-named config can never be dispatched, so do not link it.
         names = sorted(n for n in discovered if n not in RESERVED_COMMANDS)
-        names.append("int")
+        names += ["int", "q"]
     if not names:
         raise SlurpyError(
             'no software configs found to link. run "slurpy list" to see '
             "the search path"
         )
     for name in names:
-        if name not in discovered and name not in ("int", "interactive"):
+        if name not in discovered and name not in ("int", "interactive", "q"):
             raise _unknown_software_error(name, search_path)
     target = Path(__file__).resolve()
     directory = Path(args.dir).expanduser()
@@ -1443,6 +2091,11 @@ def run(argv: Sequence[str]) -> int:
     if command in ("version", "--version"):
         print(f"slurpy {__version__}")
         return 0
+    # allow flag-style command spellings such as slurpy -qwp chem.
+    command = command.lstrip("-") or "help"
+    if command == "help":
+        print(HELP_TEXT)
+        return 0
     if command in ("int", "interactive"):
         return cmd_interactive(rest)
     if command == "list":
@@ -1451,6 +2104,20 @@ def run(argv: Sequence[str]) -> int:
         return cmd_link(rest)
     if command == "init":
         return cmd_init(rest)
+    if command in ("q", "queue"):
+        return cmd_queue("", rest)
+    if command[0] == "q" and set(command[1:]) <= set(QUEUE_MODIFIERS):
+        return cmd_queue(command[1:], rest)
+    if command in ("p", "partition"):
+        return cmd_partition(rest)
+    if command in ("hist", "history"):
+        return cmd_history(rest)
+    if command == "cancel":
+        return cmd_cancel(rest)
+    if command in ("hold", "release"):
+        return cmd_hold_release(rest, command)
+    if command in ("mod", "modify"):
+        return cmd_modify(rest)
     return cmd_submit(command, rest)
 
 
