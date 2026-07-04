@@ -1,0 +1,26 @@
+# fixture fdmnes config for tests: fixed-name input file dance.
+
+[software]
+extensions = [".txt"]
+
+[resources]
+ntasks = 4
+cpus = 1
+
+[paths]
+fdmnes_dir = "/opt/fdmnes"
+
+[environment]
+setup = """
+. "{fdmnes_dir}/mpirt/bin/intel64/mpivars.sh"
+"""
+
+[execution]
+command = '''
+rm -f "$input"
+rsync -a --exclude=output --exclude=fdmfile.txt "$SLURM_SUBMIT_DIR/" .
+printf '1\n\n%s\n' "$input_path" > fdmfile.txt
+"{fdmnes_dir}/mpirt/bin/intel64/mpirun" -np {ntasks} "{fdmnes_dir}/fdmnes_mpi_linux64" > "{output_dir}/{stem}.out"
+rsync -a --exclude=fdmfile.txt --exclude=output "$PWD/" "{output_dir}/"
+'''
+scratch = true

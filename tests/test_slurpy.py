@@ -119,6 +119,11 @@ GOLDEN_CASES: list[tuple[str, list[str], list[str]]] = [
         ["python", "analysis.py", "-c", "4", "--dry-run"],
         ["analysis.py"],
     ),
+    (
+        "fdmnes-single-default",
+        ["fdmnes", "input/CeS8_inp.txt", "--dry-run"],
+        ["input/CeS8_inp.txt"],
+    ),
 ]
 
 
@@ -146,6 +151,7 @@ class TempCwdTestCase(unittest.TestCase):
 
     def touch(self, *names: str) -> None:
         for name in names:
+            Path(name).parent.mkdir(parents=True, exist_ok=True)
             Path(name).write_text("")
 
 

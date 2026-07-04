@@ -3,7 +3,8 @@
 ## 0.2.0
 
 - paired inputs via secondary_extensions, for dalton and dirac
-- new software configs: dalton, dalton-embedded, dirac, cfour, python
+- new software configs: dalton, dalton-embedded, dirac, cfour, python,
+  fdmnes, fdmnes-serial
 - --set key=value overrides [paths] values per submission
 - --inject-resources rewrites cpu/memory directives in staged input copies
 - slurm commands: q/queue with stacking modifiers, p/partition with up and

@@ -43,6 +43,7 @@ slurpy python   [options] script.py  [script2.py ...]
 slurpy cfour    [options] input.inp  [input2.inp ...]
 slurpy dalton   [options] calc.dal geom.mol [geom2.mol ...]
 slurpy dirac    [options] calc.inp geom.mol [calc2.inp geom2.mol ...]
+slurpy fdmnes   [options] input.txt  [input2.txt ...]
 slurpy exec     [options] script.sh  [script2.sh ...]
 slurpy int      [options]            # interactive shell on a compute node
 slurpy list                          # available software and config paths
@@ -232,6 +233,11 @@ a lock. Override the basis with `--set genbas=FILE`.
 
 **python** - input `.py`, sets `OMP_NUM_THREADS`. Copy to
 `python-<env>.toml` with an activation line for each environment.
+
+**fdmnes** - pass the calculation inputs (`.txt`), never the master
+`fdmfile.txt`. Each job mirrors the submission directory into scratch,
+writes a one-entry `fdmfile.txt` (the binary takes no arguments), and
+copies new files back. `fdmnes-serial` runs the OpenMP binary.
 
 **exec** - runs any script via a launcher (`bash` by default, override
 with `--launcher python3`). No scratch.

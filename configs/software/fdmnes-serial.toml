@@ -1,0 +1,30 @@
+# fdmnes x-ray spectroscopy (serial binary with openmp threads).
+# usage: slurpy fdmnes-serial input/CeS8_inp.txt -c 4
+# see fdmnes.toml for how the fdmfile.txt handling works.
+
+[software]
+extensions = [".txt"]
+
+[resources]
+cpus = 4
+memory_gb = 24
+
+[paths]
+fdmnes_dir = "/path/to/fdmnes-serial/bin"
+
+[environment]
+setup = """
+module purge
+export PATH="{fdmnes_dir}:$PATH"
+export OMP_NUM_THREADS={cpus}
+"""
+
+[execution]
+command = '''
+rm -f "$input"
+rsync -a --exclude=output --exclude=.slurpy-staged --exclude=fdmfile.txt "$SLURM_SUBMIT_DIR/" .
+printf '1\n\n%s\n' "$input_path" > fdmfile.txt
+"{fdmnes_dir}/fdmnes" > "{output_dir}/{stem}.out"
+rsync -a --exclude=fdmfile.txt --exclude=input --exclude=cif --exclude=analysis --exclude=output "$PWD/" "{output_dir}/"
+'''
+scratch = true

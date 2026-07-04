@@ -34,6 +34,7 @@ def main() -> int:
         ):
             for name, argv, files in test_slurpy.GOLDEN_CASES:
                 for file in files:
+                    Path(file).parent.mkdir(parents=True, exist_ok=True)
                     Path(file).write_text("")
                 code, stdout, stderr = test_slurpy.run_slurpy(argv)
                 if code != 0:
