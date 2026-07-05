@@ -2662,9 +2662,64 @@ def cmd_interactive(argv: Sequence[str]) -> int:
         ) from error
 
 
-def cmd_list() -> int:
-    """Show the config search path and the available software."""
+def _check_task_config(path: Path, name: str) -> str:
+    """Health check one task config: parse it and probe its paths."""
+    try:
+        software = parse_software_config(path, name)
+    except SlurpyError as error:
+        return f"config error: {error}"
+    missing: list[str] = []
+    unchecked = False
+    for key, value in software.paths.items():
+        expanded = os.path.expanduser(value)
+        if os.path.isabs(expanded):
+            if not Path(expanded).exists():
+                missing.append(f"{key} -> {value}")
+        else:
+            # bare command names need the setup block, cannot be probed.
+            unchecked = True
+    if software.exclude_file:
+        if not Path(os.path.expanduser(software.exclude_file)).exists():
+            missing.append(f"exclude_file -> {software.exclude_file}")
+    if missing:
+        return "missing: " + ", ".join(missing)
+    if unchecked:
+        return "ok (relative paths not checked)"
+    return "ok"
+
+
+def cmd_list(argv: Sequence[str]) -> int:
+    """Show the config search path and the available tasks."""
+    parser = argparse.ArgumentParser(
+        prog="slurpy list",
+        description="available tasks and config paths",
+    )
+    parser.add_argument(
+        "--check",
+        action="store_true",
+        help="verify configs parse and their [paths] entries exist",
+    )
+    parser.add_argument(
+        "--names",
+        action="store_true",
+        help="plain task names only, for scripts and completion",
+    )
+    parser.add_argument(
+        "--partitions",
+        dest="partitions_only",
+        action="store_true",
+        help="plain partition list from config, for completion",
+    )
+    args = parser.parse_args(list(argv))
     search_path = resolve_search_path()
+    if args.partitions_only:
+        for name in load_partitions():
+            print(name)
+        return 0
+    if args.names:
+        for name in sorted(discover_software(search_path)):
+            print(name)
+        return 0
     print("config search path:")
     for index, directory in enumerate(search_path, start=1):
         note = "" if directory.is_dir() else "  (missing)"
@@ -2681,11 +2736,20 @@ def cmd_list() -> int:
     print()
     print("available tasks:")
     width = max(len(name) for name in discovered)
+    failures = 0
     for name in sorted(discovered):
         note = ""
         if name in RESERVED_COMMANDS:
             note = "  (shadowed by the built-in command, rename the file)"
+        if args.check:
+            verdict = _check_task_config(discovered[name], name)
+            if not verdict.startswith("ok"):
+                failures += 1
+            note = f"  {verdict}{note}"
         print(f"  {name:<{width}}  {discovered[name]}{note}")
+    if args.check and failures:
+        print(f"{failures} task config(s) need attention", file=sys.stderr)
+        return 1
     return 0
 
 
@@ -2968,7 +3032,7 @@ def run(argv: Sequence[str]) -> int:
     if command in ("int", "interactive"):
         return cmd_interactive(rest)
     if command == "list":
-        return cmd_list()
+        return cmd_list(rest)
     if command == "link":
         return cmd_link(rest)
     if command == "init":

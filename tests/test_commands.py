@@ -152,6 +152,54 @@ class PartitionTests(CommandTestCase):
                 self.assertIn('partitions = ["chem", "open"]', config.read_text())
 
 
+class ListModeTests(unittest.TestCase):
+    def setUp(self) -> None:
+        self._tmp = tempfile.TemporaryDirectory()
+        self.addCleanup(self._tmp.cleanup)
+        self._old_cwd = os.getcwd()
+        os.chdir(self._tmp.name)
+        self.addCleanup(os.chdir, self._old_cwd)
+        config = Path("cfg")
+        (config / "software").mkdir(parents=True)
+        good_dir = Path("goodbin").resolve()
+        good_dir.mkdir()
+        (config / "software" / "good.toml").write_text(
+            f"[paths]\nbin = '{good_dir}'\n[execution]\ncommand = '\"{{bin}}/x\" \"{{input}}\"'\n"
+        )
+        (config / "software" / "gone.toml").write_text(
+            "[paths]\nbin = '/nonexistent/dir'\n[execution]\ncommand = '\"{bin}/x\" \"{input}\"'\n"
+        )
+        (config / "software" / "broken.toml").write_text(
+            "[execution]\nscratch = true\n"
+        )
+        patcher = mock.patch.dict(os.environ, {slurpy.CONFIG_PATH_ENV: str(config)})
+        patcher.start()
+        self.addCleanup(patcher.stop)
+
+    def test_names_plain(self) -> None:
+        code, stdout, _ = test_slurpy.run_slurpy(["list", "--names"])
+        self.assertEqual(code, 0)
+        self.assertEqual(stdout.split(), ["broken", "gone", "good"])
+
+    def test_check_reports_and_fails(self) -> None:
+        code, stdout, stderr = test_slurpy.run_slurpy(["list", "--check"])
+        self.assertEqual(code, 1)
+        self.assertIn("ok", stdout)
+        self.assertIn("missing: bin -> /nonexistent/dir", stdout)
+        self.assertIn("config error:", stdout)
+        self.assertIn("2 task config(s) need attention", stderr)
+
+    def test_partitions_plain(self) -> None:
+        with tempfile.TemporaryDirectory() as home:
+            config_dir = Path(home) / ".config" / "slurpy"
+            config_dir.mkdir(parents=True)
+            (config_dir / "slurpy.toml").write_text('partitions = ["chem", "kemi6"]\n')
+            with mock.patch.dict(os.environ, {"HOME": home}):
+                code, stdout, _ = test_slurpy.run_slurpy(["list", "--partitions"])
+        self.assertEqual(code, 0)
+        self.assertEqual(stdout.split(), ["chem", "kemi6"])
+
+
 class JobControlTests(CommandTestCase):
     def test_cancel_by_id(self) -> None:
         runner, code, stdout, _ = self.run_with_mock(["cancel", "4242"])
