@@ -509,6 +509,65 @@ class JobFileTests(TempCwdTestCase):
         self.assertIn('task = "xtb"', Path("myrun.slpy").read_text())
 
 
+class AfterParsableTests(TempCwdTestCase):
+    def _fake_sbatch(self) -> None:
+        bin_dir = Path("fakebin")
+        bin_dir.mkdir(exist_ok=True)
+        sbatch = bin_dir / "sbatch"
+        sbatch.write_text(
+            "#!/bin/bash\ncat > /dev/null\necho 'Submitted batch job 99'\n"
+        )
+        sbatch.chmod(0o755)
+        patcher = mock.patch.dict(
+            os.environ, {"PATH": f"{bin_dir.resolve()}:{os.environ['PATH']}"}
+        )
+        patcher.start()
+        self.addCleanup(patcher.stop)
+
+    def test_after_translates(self) -> None:
+        self.touch("mol.xyz")
+        code, stdout, stderr = run_slurpy(
+            ["xtb", "mol.xyz", "--after", "11,22", "--dry-run"]
+        )
+        self.assertEqual(code, 0, stderr)
+        self.assertIn("#SBATCH --dependency=afterok:11:22", stdout)
+
+    def test_after_conflicts_with_dependency(self) -> None:
+        self.touch("mol.xyz")
+        code, _, stderr = run_slurpy(
+            [
+                "xtb",
+                "mol.xyz",
+                "--after",
+                "11",
+                "--dependency",
+                "afterok:2",
+                "--dry-run",
+            ]
+        )
+        self.assertEqual(code, 1)
+        self.assertIn("not both", stderr)
+
+    def test_after_rejects_names(self) -> None:
+        self.touch("mol.xyz")
+        code, _, stderr = run_slurpy(
+            ["xtb", "mol.xyz", "--after", "myjob", "--dry-run"]
+        )
+        self.assertEqual(code, 1)
+        self.assertIn("numeric job ids", stderr)
+
+    def test_parsable_prints_only_id(self) -> None:
+        self._fake_sbatch()
+        self.touch("mol.xyz")
+        Path("output").mkdir()
+        Path("output/mol.out").write_text("old")
+        code, stdout, stderr = run_slurpy(["xtb", "mol.xyz", "--parsable"])
+        self.assertEqual(code, 0, stderr)
+        self.assertEqual(stdout.strip(), "99")
+        self.assertIn("submitted job 99", stderr)
+        self.assertIn("backup:", stderr)
+
+
 class ManifestFlagTests(TempCwdTestCase):
     def test_manifest_inputs(self) -> None:
         self.touch("runs/a.xyz", "runs/b.xyz")

@@ -248,9 +248,7 @@ class HistoryTests(CommandTestCase):
             self.assertIn(f"usage over the last {token}", stdout)
 
     def test_window_with_state_filters_table(self) -> None:
-        _, code, stdout, _ = self.run_with_mock(
-            ["hist", "1w", "failed"], SACCT_SAMPLE
-        )
+        _, code, stdout, _ = self.run_with_mock(["hist", "1w", "failed"], SACCT_SAMPLE)
         self.assertEqual(code, 0)
         self.assertIn("opt", stdout)
         self.assertNotIn("usage over", stdout)

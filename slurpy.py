@@ -29,6 +29,7 @@ from collections.abc import Iterator, Mapping, Sequence
 from contextlib import contextmanager
 from dataclasses import dataclass
 from pathlib import Path
+from typing import TextIO
 
 __version__ = "0.2.0"
 
@@ -85,7 +86,16 @@ FINISHED_STATES = (
 )
 # Time-window selectors: 3h/3hour, 2d/2day, 1w/1week, 6m/6month.
 WINDOW_RE = re.compile(r"(\d+)(h|hour|d|day|w|week|m|month)s?")
-_WINDOW_HOURS = {"h": 1, "hour": 1, "d": 24, "day": 24, "w": 168, "week": 168, "m": 720, "month": 720}
+_WINDOW_HOURS = {
+    "h": 1,
+    "hour": 1,
+    "d": 24,
+    "day": 24,
+    "w": 168,
+    "week": 168,
+    "m": 720,
+    "month": 720,
+}
 # State filter keywords for hist and status.
 STATE_KEYWORDS = {
     "failed": ("FAILED", "OUT_OF_MEMORY", "NODE_FAIL"),
@@ -1021,6 +1031,17 @@ def resolve_spec(
             "max_array_size in slurpy.toml"
         )
 
+    if args.after:
+        if args.dependency:
+            raise SlurpyError("give either --after or --dependency, not both")
+        after_ids = [part.strip() for part in args.after.split(",") if part.strip()]
+        if not after_ids or not all(re.fullmatch(r"\d+", i) for i in after_ids):
+            raise SlurpyError(
+                f'invalid --after "{args.after}". give numeric job ids, '
+                "comma separated"
+            )
+        args.dependency = "afterok:" + ":".join(after_ids)
+
     partition = args.partition
     if partition is None:
         value = software.resources.get("partition")
@@ -1155,6 +1176,7 @@ _JOB_FILE_STR_KEYS = {
     "mail_type": "mail_type",
     "mail_user": "mail_user",
     "dependency": "dependency",
+    "after": "after",
     "launcher": "launcher",
     "variant": "variant",
     "args": "program_args",
@@ -1193,6 +1215,7 @@ JOB_TEMPLATE = """\
 # mail_type = "END,FAIL"
 # mail_user = "me@example.com"
 # dependency = "afterok:12345"
+# after = "12345"              # afterok shorthand, numeric ids
 # launcher = "python3"         # exec-style tasks
 # variant = "dev"              # use <task>-dev.toml
 # args = "--opt --gfn 2"       # program arguments ({args} configs)
@@ -1387,7 +1410,9 @@ def _next_backup_path(backup_dir: Path, name: str) -> Path:
     )
 
 
-def backup_existing_outputs(output_dir: Path, stems: Sequence[str]) -> None:
+def backup_existing_outputs(
+    output_dir: Path, stems: Sequence[str], stream: TextIO | None = None
+) -> None:
     """Move existing output/<stem>.* files into output/backup/, numbered up."""
     backup_dir = output_dir / "backup"
     for stem in sorted(set(stems)):
@@ -1397,7 +1422,7 @@ def backup_existing_outputs(output_dir: Path, stems: Sequence[str]) -> None:
             backup_dir.mkdir(parents=True, exist_ok=True)
             destination = _next_backup_path(backup_dir, path.name)
             path.rename(destination)
-            print(f"backup: {path} -> {destination}")
+            print(f"backup: {path} -> {destination}", file=stream or sys.stdout)
 
 
 def write_manifest(
@@ -2045,9 +2070,7 @@ def cmd_history(argv: Sequence[str]) -> int:
         jobs = [job for job in jobs if job.name in wanted]
     if states:
         jobs = [
-            job
-            for job in jobs
-            if any(job.state.startswith(state) for state in states)
+            job for job in jobs if any(job.state.startswith(state) for state in states)
         ]
     first_index = 1
     if ids or names or window is not None:
@@ -2125,6 +2148,16 @@ def build_submit_parser(software_name: str) -> argparse.ArgumentParser:
     parser.add_argument("--mail-type")
     parser.add_argument("--mail-user")
     parser.add_argument("--dependency", help="slurm dependency, e.g. afterok:12345")
+    parser.add_argument(
+        "--after",
+        metavar="ID[,ID...]",
+        help="run after these jobs complete ok (afterok shorthand)",
+    )
+    parser.add_argument(
+        "--parsable",
+        action="store_true",
+        help="print only the job id, everything else goes to stderr",
+    )
     parser.add_argument(
         "--launcher", help="program that runs the input (exec-style configs)"
     )
@@ -2251,28 +2284,32 @@ def cmd_submit(software_name: str, argv: Sequence[str]) -> int:
         print(script, end="")
         return 0
 
+    info = sys.stderr if args.parsable else sys.stdout
     output_dir = Path("output")
     output_dir.mkdir(exist_ok=True)
     with _submission_lock(output_dir):
-        backup_existing_outputs(output_dir, spec.stems)
+        backup_existing_outputs(output_dir, spec.stems, stream=info)
         if spec.array:
             write_manifest(
                 Path(manifest_name(spec.job_name)), spec.inputs, spec.secondaries
             )
         job_id = submit_script(script)
+    if args.parsable:
+        print(job_id)
     if spec.array:
         print(
             f"submitted array job {job_id} ({spec.job_name}, "
-            f"{len(spec.inputs)} tasks, throttle {spec.throttle})"
+            f"{len(spec.inputs)} tasks, throttle {spec.throttle})",
+            file=info,
         )
     else:
-        print(f"submitted job {job_id} ({spec.job_name})")
+        print(f"submitted job {job_id} ({spec.job_name})", file=info)
     try:
         record_path = record_submission(
             software_name, args, spec, raw_inputs, site, job_id
         )
         if args.record is not None:
-            print(f"recorded: {record_path}")
+            print(f"recorded: {record_path}", file=info)
     except OSError as error:
         # the job is already submitted, a failed record only warns.
         print(f"warning: could not write job record: {error}", file=sys.stderr)
