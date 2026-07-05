@@ -9,6 +9,16 @@
 - --args passes program arguments through the {args} placeholder (xtb)
 - job files: slurpy <task> -f job.slpy, slurpy template, automatic
   submission records in output/.record/, --record for visible records
+- every submission is auto-recorded, also with --record; limit 1000
+- -M/--manifest input lists, also as the manifest job-file key
+- hist state filters (failed, timeout, cancelled, completed) and unified
+  time windows (Xh/Xd/Xw/Xm)
+- status command: per-project job fate from the records, --rerun writes
+  job files covering exactly the failed tasks
+- --after dependency shorthand and --parsable id-only output
+- --mem-per-cpu allocation
+- list --check config health check, --names and --partitions plain modes
+- completion command: bash completion plus guarded s<task> aliases
 - user-facing wording says task instead of software
 - --inject-resources rewrites cpu/memory directives in staged input copies
 - slurm commands: q/queue with stacking modifiers, p/partition with up and

@@ -17,7 +17,13 @@ git clone https://github.com/zliasi/slurpy
 cp slurpy/slurpy.py ~/bin/slurpy    # any directory on your PATH
 chmod +x ~/bin/slurpy
 slurpy init                         # scaffold ~/.config/slurpy/
-slurpy link                         # optional: create sorca, sgaussian, ...
+```
+
+Add to your `.bashrc` for tab completion plus `sorca`-style aliases for
+every task (existing commands and aliases are never overridden):
+
+```
+eval "$(slurpy completion)"
 ```
 
 Or grab just the one required file:
@@ -55,7 +61,7 @@ calculation file with several geometry files submits an array with one
 pair per task, and alternating pairs work too. Results are named
 `<calc>-<geom>`.
 
-Or via the shorthand symlinks after `slurpy link`:
+Or via the generated aliases (or `slurpy link` symlinks for scripts):
 
 ```
 sorca -c 8 -m 16 -t 1-00:00:00 h2o.inp
@@ -98,7 +104,11 @@ Use `-h` for an overview of flags
     --no-archive            skip the scratch archive
     --dry-run               print the script, do not submit
 -f, --file FILE             read settings and inputs from a job file
-    --record [FILE]         write a rerunnable job file for the submission
+-M, --manifest FILE         read input paths from a list file
+    --after ID[,ID...]      run after these jobs complete ok
+    --parsable              print only the job id (for scripting)
+    --mem-per-cpu INT       memory in GB per cpu, instead of -m
+    --record [FILE]         write a visible, rerunnable job file
 ```
 
 Defaults come from the software config, then `slurpy.toml`, then built-in
@@ -120,10 +130,13 @@ plus `task` (checked against the command), `input = [...]` (paths
 relative to the file's location), and a `[paths]` table matching
 `--set`. Precedence: command line, then the file, then configs.
 
-Every submission is also auto-recorded as a minimal job file in
+Plain input lists work too: `-M list.txt` (one path per line, `#`
+comments allowed), or `manifest = "list.txt"` inside a job file.
+
+Every submission is auto-recorded as a minimal job file in
 `output/.record/yyyy-mm-dd-hh-mm-ss-<jobid>.slpy` (oldest deleted beyond
-`record_limit`, default 100), so any previous run can be repeated with
-`-f`. Add `--record [FILE]` to write a visible, commented record instead
+`record_limit`, default 1000), so any previous run can be repeated with
+`-f`. `--record [FILE]` additionally writes a visible, commented record
 (default name like `slurpy-orca-h2o-c8m16pchem.slpy`).
 
 `--inject-resources` makes the resource lines inside the input file
@@ -153,8 +166,15 @@ slurpy hist                  your last 10 finished jobs with cpu and
                              memory efficiency
 slurpy hist 25               last 25
 slurpy hist 10..20           jobs 10 through 20, 1 = newest
-slurpy hist 3month           usage summary for the last 3 months
+slurpy hist 3month           usage summary for a window (Xh/Xd/Xw/Xm)
+slurpy hist failed           only failed jobs (timeout, cancelled,
+                             completed work too)
 slurpy hist 12345 opt-run    specific finished jobs, by id or name
+slurpy status                fate of every job submitted from this
+                             directory, from the auto-records
+slurpy status orca 3d        filter by task, id, or time window
+slurpy status --rerun        write rerun-<jobid>.slpy job files covering
+                             exactly the failed tasks
 slurpy cancel ID|NAME ...    cancel jobs (asks before name matches,
                              --yes to skip, also for hold and release)
 slurpy hold ID ...           hold, and slurpy release to let go
@@ -165,7 +185,9 @@ slurpy mod ID key=value      change a submitted job: throttle, nice,
 `q` modifiers stack in any order (`w` watch, `p` partition, `a` all,
 `u` user, `j` jobs), and the long forms `slurpy queue --watch
 --partition chem` work too, as do `interactive`, `history`, and
-`modify`. After `slurpy link`, `sq` is a shorthand for `slurpy q`.
+`modify`. The completion script defines an `s<task>` alias per task;
+other shorthands like `sq` are left to your own `.bashrc` (an `sq`
+symlink from `slurpy link` also works).
 
 ## Configuration
 

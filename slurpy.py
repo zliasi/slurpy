@@ -169,9 +169,14 @@ slurm info (--record [FILE] writes the output to a file):
   slurpy p up                       partition and node availability
   slurpy p permission               detect and store the partitions you
                                     may use
-  slurpy hist [N | A..B | Xmonth | ID|NAME ...]
-                                    finished jobs, 1 = newest. Xmonth
-                                    gives a usage summary
+  slurpy hist [N | A..B | Xd/Xw/Xm | STATE | ID|NAME ...]
+                                    finished jobs, 1 = newest. a bare
+                                    window (3d, 1month) gives a usage
+                                    summary, failed/timeout/cancelled/
+                                    completed filter the table
+  slurpy status [SEL ...] [--rerun] fate of jobs submitted from this
+                                    directory, --rerun writes job files
+                                    for the failed tasks
 
 job control:
   slurpy cancel <ID|NAME> ...
@@ -183,6 +188,8 @@ setup:
   slurpy link [--dir DIR]           shorthand symlinks (sorca, sq, ...)
   slurpy init [--dir DIR]           create a config directory
   slurpy template [FILE]            print or write a job file template
+  slurpy completion                 bash completion + s<task> aliases,
+                                    install: eval "$(slurpy completion)"
   slurpy version                    print the version
 
 examples:
