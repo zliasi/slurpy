@@ -1153,6 +1153,7 @@ _JOB_FILE_BOOL_KEYS = {
 _JOB_FILE_KEYS = (
     "task",
     "input",
+    "manifest",
     "paths",
     *_JOB_FILE_INT_KEYS,
     *_JOB_FILE_STR_KEYS,
@@ -1185,6 +1186,7 @@ JOB_TEMPLATE = """\
 # no_archive = true
 # inject_resources = true
 # input = ["a.xyz", "b.xyz"]   # relative to the location of this file
+# manifest = "inputs.txt"      # read more inputs from a list file
 
 # [paths]                      # same as --set key=value
 # mykey = "/path/to/thing"
@@ -1196,6 +1198,28 @@ def _toml_string(value: str) -> str:
         return f"'{value}'"
     escaped = value.replace("\\", "\\\\").replace('"', '\\"')
     return f'"{escaped}"'
+
+
+def read_manifest(path: Path) -> list[str]:
+    """
+    Read an input list: one path per line, # comments and blanks skipped.
+
+    Paths resolve relative to the manifest's location.
+    """
+    if not path.is_file():
+        raise SlurpyError(f"manifest {path} not found. check the path")
+    entries: list[str] = []
+    for line in path.read_text().splitlines():
+        stripped = line.strip()
+        if not stripped or stripped.startswith("#"):
+            continue
+        if os.path.isabs(stripped):
+            entries.append(stripped)
+        else:
+            entries.append(str(path.parent / stripped))
+    if not entries:
+        raise SlurpyError(f"manifest {path} lists no input files")
+    return entries
 
 
 def load_job_file(path: Path, args: argparse.Namespace) -> str | None:
@@ -1220,11 +1244,18 @@ def load_job_file(path: Path, args: argparse.Namespace) -> str | None:
         if _get_bool(data, key, "top level", path, False) and not getattr(args, dest):
             setattr(args, dest, True)
     file_inputs = _get_str_list(data, "input", "top level", path)
-    if file_inputs and not args.inputs:
+    manifest_name_value = _get_str(data, "manifest", "top level", path)
+    if (file_inputs or manifest_name_value) and not args.inputs:
         base = path.parent
-        args.inputs = [
+        combined = [
             text if os.path.isabs(text) else str(base / text) for text in file_inputs
         ]
+        if manifest_name_value:
+            manifest_path = Path(manifest_name_value)
+            if not manifest_path.is_absolute():
+                manifest_path = base / manifest_path
+            combined += read_manifest(manifest_path)
+        args.inputs = combined
     paths_table = _get_table(data, "paths", path)
     file_overrides: list[str] = []
     for key, path_value in paths_table.items():
@@ -2019,6 +2050,13 @@ def build_submit_parser(software_name: str) -> argparse.ArgumentParser:
     )
     parser.add_argument("inputs", nargs="*", metavar="input")
     parser.add_argument(
+        "-M",
+        "--manifest",
+        dest="manifest",
+        metavar="FILE",
+        help="read input paths from a list file, one per line",
+    )
+    parser.add_argument(
         "-f",
         "--file",
         dest="job_file",
@@ -2126,6 +2164,10 @@ def _submission_lock(output_dir: Path) -> Iterator[None]:
 def cmd_submit(software_name: str, argv: Sequence[str]) -> int:
     """Validate, render, and submit one job or one array."""
     args = build_submit_parser(software_name).parse_args(list(argv))
+    if args.manifest:
+        args.inputs = list(args.inputs) + read_manifest(
+            Path(args.manifest).expanduser()
+        )
     file_task = None
     if args.job_file:
         file_task = load_job_file(Path(args.job_file).expanduser(), args)

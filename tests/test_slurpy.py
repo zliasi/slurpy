@@ -509,6 +509,44 @@ class JobFileTests(TempCwdTestCase):
         self.assertIn('task = "xtb"', Path("myrun.slpy").read_text())
 
 
+class ManifestFlagTests(TempCwdTestCase):
+    def test_manifest_inputs(self) -> None:
+        self.touch("runs/a.xyz", "runs/b.xyz")
+        Path("runs/list.txt").write_text("# comment\na.xyz\n\nb.xyz\n")
+        code, stdout, stderr = run_slurpy(["xtb", "-M", "runs/list.txt", "--dry-run"])
+        self.assertEqual(code, 0, stderr)
+        self.assertIn("--array=1-2%5", stdout)
+
+    def test_manifest_missing(self) -> None:
+        code, _, stderr = run_slurpy(["xtb", "-M", "nope.txt", "--dry-run"])
+        self.assertEqual(code, 1)
+        self.assertIn("manifest nope.txt not found", stderr)
+
+    def test_manifest_empty(self) -> None:
+        Path("list.txt").write_text("# only comments\n")
+        code, _, stderr = run_slurpy(["xtb", "-M", "list.txt", "--dry-run"])
+        self.assertEqual(code, 1)
+        self.assertIn("lists no input files", stderr)
+
+    def test_positionals_and_manifest_concatenate(self) -> None:
+        self.touch("a.xyz", "b.xyz")
+        Path("list.txt").write_text("b.xyz\n")
+        code, stdout, stderr = run_slurpy(
+            ["xtb", "a.xyz", "-M", "list.txt", "--dry-run"]
+        )
+        self.assertEqual(code, 0, stderr)
+        self.assertIn("--array=1-2%5", stdout)
+
+    def test_manifest_key_in_job_file(self) -> None:
+        self.touch("runs/a.xyz")
+        Path("runs/list.txt").write_text("a.xyz\n")
+        Path("runs/job.slpy").write_text('manifest = "list.txt"\ncpus = 3\n')
+        code, stdout, stderr = run_slurpy(["xtb", "-f", "runs/job.slpy", "--dry-run"])
+        self.assertEqual(code, 0, stderr)
+        self.assertIn("--cpus-per-task=3", stdout)
+        self.assertIn('input_path="runs/a.xyz"', stdout)
+
+
 class TemplateTests(TempCwdTestCase):
     def test_stdout(self) -> None:
         code, stdout, _ = run_slurpy(["template"])
