@@ -53,6 +53,7 @@ RESERVED_COMMANDS = frozenset(
         "interactive",
         "link",
         "list",
+        "status",
         "template",
         "version",
         "q",
@@ -2112,6 +2113,272 @@ def cmd_history(argv: Sequence[str]) -> int:
     return 0
 
 
+RECORD_NAME_RE = re.compile(r"(\d{4}-\d{2}-\d{2}-\d{2}-\d{2}-\d{2})-(\d+)\.slpy")
+# sacct job ids: 1234, 1234_17, or pending ranges 1234_[18-20%2].
+SACCT_ID_RE = re.compile(r"(\d+)(?:_(\d+|\[[^\]]+\]))?")
+
+
+@dataclass(frozen=True)
+class SubmissionRecord:
+    """One auto-recorded submission from output/.record/."""
+
+    path: Path
+    job_id: str
+    stamp: datetime.datetime
+    data: dict[str, object]
+
+    @property
+    def task(self) -> str:
+        value = self.data.get("task")
+        return value if isinstance(value, str) else "?"
+
+    @property
+    def inputs(self) -> list[str]:
+        value = self.data.get("input")
+        if isinstance(value, list):
+            return [item for item in value if isinstance(item, str)]
+        return []
+
+
+def load_submission_records() -> list[SubmissionRecord]:
+    """Read the project's submission ledger, oldest first."""
+    record_dir = Path("output") / ".record"
+    if not record_dir.is_dir():
+        raise SlurpyError(
+            "no output/.record/ found here. status works in a directory "
+            "slurpy has submitted from"
+        )
+    records: list[SubmissionRecord] = []
+    for path in sorted(record_dir.glob("*.slpy")):
+        match = RECORD_NAME_RE.fullmatch(path.name)
+        if not match:
+            continue
+        stamp = datetime.datetime.strptime(match.group(1), "%Y-%m-%d-%H-%M-%S")
+        records.append(
+            SubmissionRecord(
+                path=path,
+                job_id=match.group(2),
+                stamp=stamp,
+                data=_load_toml(path),
+            )
+        )
+    if not records:
+        raise SlurpyError(
+            "output/.record/ holds no submission records. status works in "
+            "a directory slurpy has submitted from"
+        )
+    return records
+
+
+def _expand_task_ids(token: str) -> list[int]:
+    """Expand a sacct array suffix: 17 or [18-20,25%2] to task indices."""
+    if not token.startswith("["):
+        return [int(token)]
+    indices: list[int] = []
+    for part in token.strip("[]").split("%")[0].split(","):
+        if "-" in part:
+            start, _, stop = part.partition("-")
+            indices.extend(range(int(start), int(stop) + 1))
+        elif part:
+            indices.append(int(part))
+    return indices
+
+
+def fetch_job_states(job_ids: Sequence[str]) -> dict[str, dict[int | None, str]]:
+    """Map job id to per-array-task states via one sacct call."""
+    out = _run_slurm(
+        [
+            "sacct",
+            f"--jobs={','.join(job_ids)}",
+            "-n",
+            "-P",
+            "--format=JobID,State",
+        ]
+    )
+    states: dict[str, dict[int | None, str]] = {}
+    for line in out.splitlines():
+        parts = line.split("|")
+        if len(parts) < 2 or "." in parts[0]:
+            continue
+        match = SACCT_ID_RE.fullmatch(parts[0])
+        if not match:
+            continue
+        base, suffix = match.group(1), match.group(2)
+        state = parts[1].split()[0]
+        job = states.setdefault(base, {})
+        if suffix is None:
+            job[None] = state
+        else:
+            for index in _expand_task_ids(suffix):
+                job[index] = state
+    return states
+
+
+def _state_summary(tasks: Mapping[int | None, str]) -> str:
+    if not tasks:
+        return "UNKNOWN (not in accounting)"
+    if set(tasks) == {None}:
+        return tasks[None]
+    counts: dict[str, int] = {}
+    for state in tasks.values():
+        counts[state] = counts.get(state, 0) + 1
+    return ", ".join(f"{n} {state}" for state, n in sorted(counts.items()))
+
+
+def _rerun_inputs(record: SubmissionRecord, failed_indices: Sequence[int]) -> list[str]:
+    """Inputs reproducing exactly the failed array tasks."""
+    search_path = resolve_search_path()
+    config_path = find_software_config(record.task, search_path)
+    if config_path is None:
+        raise SlurpyError(
+            f'record {record.path} names task "{record.task}", which has '
+            "no config here. cannot build a rerun file"
+        )
+    software = parse_software_config(config_path, record.task)
+    if software.secondary_extensions:
+        primaries, secondaries, _ = group_paired_inputs(record.inputs, software)
+        rerun: list[str] = []
+        for index in failed_indices:
+            rerun += [primaries[index - 1], secondaries[index - 1]]
+        return rerun
+    return [record.inputs[index - 1] for index in failed_indices]
+
+
+def _render_record(
+    data: Mapping[str, object], inputs: Sequence[str], comments: Sequence[str]
+) -> str:
+    lines = [f"# {comment}" for comment in comments]
+    if lines:
+        lines.append("")
+    for key, value in data.items():
+        if key in ("input", "paths"):
+            continue
+        if isinstance(value, bool):
+            lines.append(f"{key} = {'true' if value else 'false'}")
+        elif isinstance(value, int):
+            lines.append(f"{key} = {value}")
+        elif isinstance(value, str):
+            lines.append(f"{key} = {_toml_string(value)}")
+    joined = ", ".join(_toml_string(text) for text in inputs)
+    lines.append(f"input = [{joined}]")
+    paths = data.get("paths")
+    if isinstance(paths, dict):
+        lines += ["", "[paths]"]
+        for key, value in paths.items():
+            lines.append(f"{key} = {_toml_string(str(value))}")
+    return "\n".join(lines) + "\n"
+
+
+def _write_rerun_file(
+    record: SubmissionRecord, tasks: Mapping[int | None, str]
+) -> tuple[Path | None, int, int]:
+    """
+    Write rerun-<jobid>.slpy for the record's failed tasks.
+
+    Return the path (None when nothing failed), the failure count, and
+    the count of tasks still pending or running.
+    """
+    failed_indices = sorted(
+        index
+        for index, state in tasks.items()
+        if index is not None and any(state.startswith(s) for s in RERUN_STATES)
+    )
+    job_failed = tasks.get(None, "").startswith(RERUN_STATES)
+    active = sum(1 for state in tasks.values() if state in ("RUNNING", "PENDING"))
+    if not failed_indices and not job_failed:
+        return None, 0, active
+    if job_failed:
+        inputs = record.inputs
+        failed_count = 1
+    else:
+        inputs = _rerun_inputs(record, failed_indices)
+        failed_count = len(failed_indices)
+    reasons: dict[str, int] = {}
+    for index, state in tasks.items():
+        if (index is None and job_failed) or index in failed_indices:
+            reasons[state] = reasons.get(state, 0) + 1
+    reason_text = ", ".join(f"{n} {state}" for state, n in sorted(reasons.items()))
+    comments = [
+        f"rerun for job {record.job_id} ({record.task})",
+        f"fail reasons: {reason_text}",
+    ]
+    path = Path(f"rerun-{record.job_id}.slpy")
+    path.write_text(_render_record(record.data, inputs, comments))
+    return path, failed_count, active
+
+
+def cmd_status(argv: Sequence[str]) -> int:
+    """Fate of this project's submissions, from the record ledger."""
+    parser = argparse.ArgumentParser(
+        prog="slurpy status",
+        description="status of jobs submitted from this directory",
+    )
+    parser.add_argument(
+        "selectors",
+        nargs="*",
+        metavar="ID | TASK | Xd/Xw/Xm",
+        help="filter by job id, task name, or time window",
+    )
+    parser.add_argument(
+        "--rerun",
+        action="store_true",
+        help="write rerun-<jobid>.slpy files for failed tasks",
+    )
+    _add_record_flag(parser)
+    args = parser.parse_args(list(argv))
+
+    records = load_submission_records()
+    ids = {token for token in args.selectors if token.isdigit()}
+    windows = [
+        delta for token in args.selectors if (delta := parse_window(token)) is not None
+    ]
+    tasks_wanted = {
+        token
+        for token in args.selectors
+        if not token.isdigit() and parse_window(token) is None
+    }
+    if ids:
+        records = [r for r in records if r.job_id in ids]
+    if tasks_wanted:
+        records = [r for r in records if r.task in tasks_wanted]
+    if windows:
+        cutoff = datetime.datetime.now() - max(windows)
+        records = [r for r in records if r.stamp >= cutoff]
+    if not records:
+        raise SlurpyError("no submission records match the selectors")
+
+    states = fetch_job_states([record.job_id for record in records])
+    lines = [f"{'jobid':<10} {'task':<12} {'submitted':<19} state"]
+    for record in records:
+        tasks = states.get(record.job_id, {})
+        lines.append(
+            f"{record.job_id:<10} {record.task:<12} "
+            f"{record.stamp.strftime('%Y-%m-%d %H:%M:%S'):<19} "
+            f"{_state_summary(tasks)}"
+        )
+    _deliver("status", "\n".join(lines) + "\n", args.record)
+
+    if not args.rerun:
+        return 0
+    wrote_any = False
+    for record in records:
+        tasks = states.get(record.job_id, {})
+        path, failed_count, active = _write_rerun_file(record, tasks)
+        if path is not None:
+            wrote_any = True
+            note = (
+                f", {active} still running or pending, not included" if active else ""
+            )
+            print(f"{record.job_id}: {failed_count} failed -> {path}{note}")
+        elif active:
+            print(
+                f"{record.job_id}: {active} still running or pending, nothing to rerun"
+            )
+    if not wrote_any:
+        print("no failed tasks among the selected jobs")
+    return 0
+
+
 def _positive_int(text: str) -> int:
     try:
         value = int(text)
@@ -2716,6 +2983,8 @@ def run(argv: Sequence[str]) -> int:
         return cmd_partition(rest)
     if command in ("hist", "history"):
         return cmd_history(rest)
+    if command == "status":
+        return cmd_status(rest)
     if command == "cancel":
         return cmd_cancel(rest)
     if command in ("hold", "release"):

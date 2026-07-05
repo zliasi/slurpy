@@ -191,6 +191,111 @@ class JobControlTests(CommandTestCase):
         self.assertIn('unknown setting "prio"', stderr)
 
 
+SACCT_STATUS_SAMPLE = "\n".join(
+    [
+        "100|COMPLETED",
+        "100.batch|COMPLETED",
+        "101_1|COMPLETED",
+        "101_1.batch|COMPLETED",
+        "101_2|FAILED",
+        "101_3|TIMEOUT",
+        "101_[4-5]|PENDING",
+        "102|FAILED",
+        "",
+    ]
+)
+
+
+class StatusTests(unittest.TestCase):
+    def setUp(self) -> None:
+        self._tmp = tempfile.TemporaryDirectory()
+        self.addCleanup(self._tmp.cleanup)
+        self._old_cwd = os.getcwd()
+        os.chdir(self._tmp.name)
+        self.addCleanup(os.chdir, self._old_cwd)
+        patcher = mock.patch.dict(
+            os.environ, {slurpy.CONFIG_PATH_ENV: str(test_slurpy.CONFIG_DIR)}
+        )
+        patcher.start()
+        self.addCleanup(patcher.stop)
+        record_dir = Path("output/.record")
+        record_dir.mkdir(parents=True)
+        for name in ("a.xyz", "b.xyz", "c.xyz", "d.xyz", "e.xyz"):
+            Path(name).write_text("")
+        inputs = ", ".join(
+            f"'{Path(n).resolve()}'"
+            for n in ("a.xyz", "b.xyz", "c.xyz", "d.xyz", "e.xyz")
+        )
+        (record_dir / "2026-07-01-10-00-00-100.slpy").write_text(
+            f"task = \"xtb\"\ncpus = 2\ninput = ['{Path('a.xyz').resolve()}']\n"
+        )
+        (record_dir / "2026-07-02-11-00-00-101.slpy").write_text(
+            f'task = "xtb"\ncpus = 4\nargs = "--opt"\ninput = [{inputs}]\n'
+        )
+        (record_dir / "2026-07-03-12-00-00-102.slpy").write_text(
+            f"task = \"exec\"\ninput = ['{Path('a.xyz').resolve()}']\n"
+        )
+
+    def run_status(self, argv: list[str]) -> tuple[SlurmMock, int, str, str]:
+        runner = SlurmMock(SACCT_STATUS_SAMPLE)
+        with mock.patch.object(slurpy, "_run_slurm", runner):
+            code, stdout, stderr = test_slurpy.run_slurpy(argv)
+        return runner, code, stdout, stderr
+
+    def test_status_table(self) -> None:
+        runner, code, stdout, stderr = self.run_status(["status"])
+        self.assertEqual(code, 0, stderr)
+        self.assertEqual(runner.calls[0][0], "sacct")
+        self.assertIn("--jobs=100,101,102", runner.calls[0][1])
+        self.assertIn("COMPLETED", stdout)
+        self.assertIn("1 COMPLETED, 1 FAILED, 2 PENDING, 1 TIMEOUT", stdout)
+
+    def test_selector_by_task(self) -> None:
+        _, code, stdout, _ = self.run_status(["status", "exec"])
+        self.assertEqual(code, 0)
+        self.assertIn("102", stdout)
+        self.assertNotIn("101", stdout)
+
+    def test_selector_by_id(self) -> None:
+        _, code, stdout, _ = self.run_status(["status", "100"])
+        self.assertEqual(code, 0)
+        self.assertIn("100", stdout)
+        self.assertNotIn("101", stdout)
+
+    def test_rerun_writes_failed_subset(self) -> None:
+        _, code, stdout, stderr = self.run_status(["status", "--rerun"])
+        self.assertEqual(code, 0, stderr)
+        rerun = Path("rerun-101.slpy")
+        self.assertTrue(rerun.is_file())
+        content = rerun.read_text()
+        self.assertIn("fail reasons: 1 FAILED, 1 TIMEOUT", content)
+        self.assertIn("b.xyz", content)
+        self.assertIn("c.xyz", content)
+        self.assertNotIn("a.xyz'", content.split("input =")[1])
+        self.assertIn("args = '--opt'", content)
+        self.assertIn("still running or pending, not included", stdout)
+        self.assertTrue(Path("rerun-102.slpy").is_file())
+        self.assertFalse(Path("rerun-100.slpy").exists())
+
+    def test_rerun_file_resubmits(self) -> None:
+        self.run_status(["status", "--rerun"])
+        code, stdout, stderr = test_slurpy.run_slurpy(
+            ["xtb", "-f", "rerun-101.slpy", "--dry-run"]
+        )
+        self.assertEqual(code, 0, stderr)
+        self.assertIn("--array=1-2%5", stdout)
+        self.assertIn("--cpus-per-task=4", stdout)
+
+    def test_no_records_directory(self) -> None:
+        os.chdir(self._tmp.name)
+        import shutil
+
+        shutil.rmtree("output")
+        _, code, _, stderr = self.run_status(["status"])
+        self.assertEqual(code, 1)
+        self.assertIn("no output/.record/", stderr)
+
+
 class HistoryTests(CommandTestCase):
     def test_default_table_newest_first(self) -> None:
         _, code, stdout, stderr = self.run_with_mock(["hist"], SACCT_SAMPLE)
