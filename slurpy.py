@@ -265,7 +265,7 @@ class SiteDefaults:
     max_cpus: int | None = None
     max_memory_gb: int | None = None
     max_array_size: int = 1000
-    record_limit: int = 100
+    record_limit: int = 1000
 
 
 _DEFAULTS_INT_KEYS = (
@@ -1303,33 +1303,32 @@ def record_submission(
     minimal record goes to output/.record/, oldest pruned at the limit.
     """
     now = datetime.datetime.now()
-    if args.record is not None:
-        comments = (
-            f"recorded by slurpy on {now.isoformat(timespec='seconds')}",
-            f"command: {' '.join(sys.argv)}",
-            f"job id: {job_id}",
-            f"rerun with: slurpy {task} -f <this file>",
-        )
-        if args.record:
-            path = Path(args.record).expanduser()
-        else:
-            name = f"slurpy-{task}-{spec.job_name}-c{spec.cpus}m{spec.memory_gb}"
-            if spec.partition:
-                name += f"p{spec.partition}"
-            path = Path(f"{name}.slpy")
-            if path.exists():
-                path = Path(f"{name}-{job_id}.slpy")
-        text = _job_record_text(task, args, spec, original_inputs, comments)
+    record_dir = Path("output") / ".record"
+    record_dir.mkdir(parents=True, exist_ok=True)
+    existing = sorted(record_dir.glob("*.slpy"))
+    while len(existing) >= site.record_limit:
+        existing.pop(0).unlink()
+    stamp = now.strftime("%Y-%m-%d-%H-%M-%S")
+    auto_path = record_dir / f"{stamp}-{job_id}.slpy"
+    auto_path.write_text(_job_record_text(task, args, spec, original_inputs, ()))
+    if args.record is None:
+        return auto_path
+    comments = (
+        f"recorded by slurpy on {now.isoformat(timespec='seconds')}",
+        f"command: {' '.join(sys.argv)}",
+        f"job id: {job_id}",
+        f"rerun with: slurpy {task} -f <this file>",
+    )
+    if args.record:
+        path = Path(args.record).expanduser()
     else:
-        record_dir = Path("output") / ".record"
-        record_dir.mkdir(parents=True, exist_ok=True)
-        existing = sorted(record_dir.glob("*.slpy"))
-        while len(existing) >= site.record_limit:
-            existing.pop(0).unlink()
-        stamp = now.strftime("%Y-%m-%d-%H-%M-%S")
-        path = record_dir / f"{stamp}-{job_id}.slpy"
-        text = _job_record_text(task, args, spec, original_inputs, ())
-    path.write_text(text)
+        name = f"slurpy-{task}-{spec.job_name}-c{spec.cpus}m{spec.memory_gb}"
+        if spec.partition:
+            name += f"p{spec.partition}"
+        path = Path(f"{name}.slpy")
+        if path.exists():
+            path = Path(f"{name}-{job_id}.slpy")
+    path.write_text(_job_record_text(task, args, spec, original_inputs, comments))
     return path
 
 
@@ -2357,7 +2356,7 @@ scratch_base = "/scratch"
 # max_cpus = 64
 # max_memory_gb = 500
 # auto-recorded job files kept in output/.record/ before pruning.
-# record_limit = 100
+# record_limit = 1000
 
 # partitions shown by "slurpy p", detected and kept current by
 # "slurpy p permission". all partitions when unset.

@@ -488,12 +488,12 @@ class JobFileTests(TempCwdTestCase):
         self.assertEqual(len(names), 2)
         self.assertNotIn("2000-01-01-00-00-00-1.slpy", names)
 
-    def test_visible_record_skips_auto(self) -> None:
+    def test_visible_record_adds_to_auto(self) -> None:
         self._install_fake_sbatch()
         self.touch("mol.xyz")
         code, stdout, stderr = run_slurpy(["xtb", "mol.xyz", "--record"])
         self.assertEqual(code, 0, stderr)
-        self.assertFalse(Path("output/.record").exists())
+        self.assertEqual(len(list(Path("output/.record").glob("*.slpy"))), 1)
         visible = list(Path(".").glob("slurpy-xtb-mol-*.slpy"))
         self.assertEqual(len(visible), 1)
         content = visible[0].read_text()

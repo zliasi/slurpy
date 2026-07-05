@@ -23,4 +23,4 @@ scratch_base = "/scratch"
 # partitions = ["chem", "compchem"]
 
 # auto-recorded job files kept in output/.record/ before pruning.
-# record_limit = 100
+# record_limit = 1000
