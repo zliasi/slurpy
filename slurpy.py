@@ -52,6 +52,7 @@ RESERVED_COMMANDS = frozenset(
         "int",
         "interactive",
         "link",
+        "completion",
         "list",
         "status",
         "template",
@@ -2998,6 +2999,97 @@ def cmd_template(argv: Sequence[str]) -> int:
     return 0
 
 
+COMPLETION_TEMPLATE = """\
+# bash completion for slurpy. install with:
+#   eval "$(slurpy completion)"
+_slurpy_complete() {{
+    local cur prev task
+    cur="${{COMP_WORDS[COMP_CWORD]}}"
+    prev="${{COMP_WORDS[COMP_CWORD - 1]}}"
+    task=""
+    if [ "${{COMP_WORDS[0]}}" != "slurpy" ]; then
+        task="${{COMP_WORDS[0]#s}}"
+    fi
+    if [ "$COMP_CWORD" -eq 1 ] && [ -z "$task" ]; then
+        local names
+        names="$(slurpy list --names 2>/dev/null)"
+        COMPREPLY=($(compgen -W "{commands} $names" -- "$cur"))
+        return
+    fi
+    [ -z "$task" ] && task="${{COMP_WORDS[1]}}"
+    case "$prev" in
+        -p|--partition)
+            COMPREPLY=($(compgen -W "$(slurpy list --partitions 2>/dev/null)" -- "$cur"))
+            return
+            ;;
+        -f|--file)
+            COMPREPLY=($(compgen -f -X '!*.slpy' -- "$cur") $(compgen -d -- "$cur"))
+            return
+            ;;
+        --variant)
+            local variants
+            variants="$(slurpy list --names 2>/dev/null | sed -n "s/^$task-//p")"
+            COMPREPLY=($(compgen -W "$variants" -- "$cur"))
+            return
+            ;;
+    esac
+    if [[ "$cur" == -* ]]; then
+        COMPREPLY=($(compgen -W "{flags}" -- "$cur"))
+        return
+    fi
+    COMPREPLY=($(compgen -f -- "$cur"))
+}}
+complete -o filenames -F _slurpy_complete slurpy
+"""
+
+COMPLETION_ALIASES = """\
+for _slurpy_task in $(slurpy list --names 2>/dev/null); do
+    if ! type "s$_slurpy_task" >/dev/null 2>&1; then
+        alias "s$_slurpy_task"="slurpy $_slurpy_task"
+        complete -o filenames -F _slurpy_complete "s$_slurpy_task"
+    fi
+done
+unset _slurpy_task
+"""
+
+_COMPLETION_COMMANDS = (
+    "q queue p partition hist history status cancel hold release mod "
+    "modify int interactive list link init template completion version help"
+)
+
+
+def _submit_flag_strings() -> str:
+    """All submit flags, generated from the parser so they never drift."""
+    parser = build_submit_parser("task")
+    flags: set[str] = set()
+    for action in parser._actions:
+        flags.update(action.option_strings)
+    flags.discard("-h")
+    flags.discard("--help")
+    return " ".join(sorted(flags))
+
+
+def cmd_completion(argv: Sequence[str]) -> int:
+    """Print the bash completion script, with guarded task aliases."""
+    parser = argparse.ArgumentParser(
+        prog="slurpy completion",
+        description='bash completion, install with eval "$(slurpy completion)"',
+    )
+    parser.add_argument(
+        "--no-aliases",
+        action="store_true",
+        help="skip the s<task> alias definitions",
+    )
+    args = parser.parse_args(list(argv))
+    script = COMPLETION_TEMPLATE.format(
+        commands=_COMPLETION_COMMANDS, flags=_submit_flag_strings()
+    )
+    if not args.no_aliases:
+        script += COMPLETION_ALIASES
+    print(script, end="")
+    return 0
+
+
 def _command_from_program_name(program: str) -> str:
     """Map a symlink name to a command: sorca -> orca, sint -> int."""
     for prefix in ("submit-", "submit", "s"):
@@ -3039,6 +3131,8 @@ def run(argv: Sequence[str]) -> int:
         return cmd_init(rest)
     if command == "template":
         return cmd_template(rest)
+    if command == "completion":
+        return cmd_completion(rest)
     if command in ("q", "queue"):
         return cmd_queue("", rest)
     if command[0] == "q" and set(command[1:]) <= set(QUEUE_MODIFIERS):

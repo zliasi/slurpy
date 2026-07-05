@@ -152,6 +152,80 @@ class PartitionTests(CommandTestCase):
                 self.assertIn('partitions = ["chem", "open"]', config.read_text())
 
 
+class CompletionTests(unittest.TestCase):
+    def setUp(self) -> None:
+        self._tmp = tempfile.TemporaryDirectory()
+        self.addCleanup(self._tmp.cleanup)
+        self._old_cwd = os.getcwd()
+        os.chdir(self._tmp.name)
+        self.addCleanup(os.chdir, self._old_cwd)
+        bin_dir = Path("bin").resolve()
+        bin_dir.mkdir()
+        slurpy_path = Path(slurpy.__file__).resolve()
+        wrapper = bin_dir / "slurpy"
+        wrapper.write_text(f'#!/bin/bash\nexec python3 "{slurpy_path}" "$@"\n')
+        wrapper.chmod(0o755)
+        self._env = {
+            "PATH": f"{bin_dir}:{os.environ['PATH']}",
+            slurpy.CONFIG_PATH_ENV: str(test_slurpy.CONFIG_DIR),
+        }
+        code, stdout, stderr = test_slurpy.run_slurpy(["completion"])
+        assert code == 0, stderr
+        Path("comp.sh").write_text(stdout)
+
+    def _bash(self, snippet: str) -> str:
+        import subprocess
+
+        result = subprocess.run(
+            ["bash", "-c", f"shopt -s expand_aliases\nsource comp.sh\n{snippet}"],
+            capture_output=True,
+            text=True,
+            env={**os.environ, **self._env},
+        )
+        return result.stdout
+
+    def test_first_word_completes_tasks_and_commands(self) -> None:
+        out = self._bash(
+            'COMP_WORDS=(slurpy ""); COMP_CWORD=1; _slurpy_complete; '
+            'printf "%s\\n" "${COMPREPLY[@]}"'
+        )
+        self.assertIn("orca", out.split())
+        self.assertIn("status", out.split())
+
+    def test_flag_completion(self) -> None:
+        out = self._bash(
+            'COMP_WORDS=(slurpy xtb "--ar"); COMP_CWORD=2; _slurpy_complete; '
+            'printf "%s\\n" "${COMPREPLY[@]}"'
+        )
+        self.assertIn("--args", out.split())
+
+    def test_aliases_defined_with_guard(self) -> None:
+        out = self._bash("alias sxtb")
+        self.assertIn("slurpy xtb", out)
+        guarded = self._bash("")
+        self.assertEqual(guarded, "")
+        # a pre-existing alias wins over the generated one.
+        import subprocess
+
+        result = subprocess.run(
+            [
+                "bash",
+                "-c",
+                "shopt -s expand_aliases\nalias sxtb='echo mine'\n"
+                "source comp.sh\nalias sxtb",
+            ],
+            capture_output=True,
+            text=True,
+            env={**os.environ, **self._env},
+        )
+        self.assertIn("echo mine", result.stdout)
+
+    def test_no_aliases_flag(self) -> None:
+        code, stdout, _ = test_slurpy.run_slurpy(["completion", "--no-aliases"])
+        self.assertEqual(code, 0)
+        self.assertNotIn("alias", stdout)
+
+
 class ListModeTests(unittest.TestCase):
     def setUp(self) -> None:
         self._tmp = tempfile.TemporaryDirectory()
