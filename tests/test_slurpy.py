@@ -130,6 +130,11 @@ GOLDEN_CASES: list[tuple[str, list[str], list[str]]] = [
         ["mol.xyz"],
     ),
     (
+        "xtb-mem-per-cpu",
+        ["xtb", "mol.xyz", "-c", "4", "--mem-per-cpu", "3", "--dry-run"],
+        ["mol.xyz"],
+    ),
+    (
         "xtb-args",
         ["xtb", "mol.xyz", "--args", "--opt --gfn 2 --chrg 1", "--dry-run"],
         ["mol.xyz"],
@@ -507,6 +512,33 @@ class JobFileTests(TempCwdTestCase):
         self.assertEqual(code, 0, stderr)
         self.assertIn("recorded: myrun.slpy", stdout)
         self.assertIn('task = "xtb"', Path("myrun.slpy").read_text())
+
+
+class MemPerCpuTests(TempCwdTestCase):
+    def test_mutually_exclusive_with_memory(self) -> None:
+        self.touch("mol.xyz")
+        with self.assertRaises(SystemExit):
+            run_slurpy(["xtb", "mol.xyz", "-m", "8", "--mem-per-cpu", "2", "--dry-run"])
+
+    def test_placeholder_uses_total(self) -> None:
+        self.touch("hf.dal", "w.mol")
+        code, stdout, stderr = run_slurpy(
+            ["dalton", "hf.dal", "w.mol", "-c", "4", "--mem-per-cpu", "3", "--dry-run"]
+        )
+        self.assertEqual(code, 0, stderr)
+        self.assertIn("#SBATCH --mem-per-cpu=3gb", stdout)
+        self.assertNotIn("#SBATCH --mem=", stdout)
+        # dalton -gb uses {memory_gb} = per_cpu * cpus.
+        self.assertIn("-gb 12", stdout)
+
+    def test_job_file_conflict(self) -> None:
+        self.touch("mol.xyz")
+        Path("job.slpy").write_text(
+            'memory = 8\nmem_per_cpu = 2\ninput = ["mol.xyz"]\n'
+        )
+        code, _, stderr = run_slurpy(["xtb", "-f", "job.slpy", "--dry-run"])
+        self.assertEqual(code, 1)
+        self.assertIn("both memory and mem_per_cpu", stderr)
 
 
 class AfterParsableTests(TempCwdTestCase):
