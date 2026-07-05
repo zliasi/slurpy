@@ -21,3 +21,6 @@ scratch_base = "/scratch"
 # partitions shown by "slurpy p", detected and kept current by
 # "slurpy p permission". all partitions when unset.
 # partitions = ["chem", "compchem"]
+
+# auto-recorded job files kept in output/.record/ before pruning.
+# record_limit = 100

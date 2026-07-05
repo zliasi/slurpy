@@ -52,6 +52,7 @@ RESERVED_COMMANDS = frozenset(
         "interactive",
         "link",
         "list",
+        "template",
         "version",
         "q",
         "queue",
@@ -129,7 +130,8 @@ HELP_TEXT = f"""\
 slurpy {__version__}: submit computational chemistry jobs to slurm.
 
 submit:
-  slurpy <software> [options] <input> [<input> ...]
+  slurpy <task> [options] <input> [<input> ...]
+  slurpy <task> -f job.slpy          settings and inputs from a job file
   slurpy int [options]              interactive shell on a compute node
 
 slurm info (--record [FILE] writes the output to a file):
@@ -152,9 +154,10 @@ job control:
   slurpy mod <ID> key=value ...     keys: throttle, nice, time, dependency
 
 setup:
-  slurpy list                       available software and config paths
+  slurpy list                       available tasks and config paths
   slurpy link [--dir DIR]           shorthand symlinks (sorca, sq, ...)
   slurpy init [--dir DIR]           create a config directory
+  slurpy template [FILE]            print or write a job file template
   slurpy version                    print the version
 
 examples:
@@ -164,7 +167,7 @@ examples:
   slurpy exec analysis.py --launcher python3
 
 multiple inputs always become one throttled slurm array, never separate
-jobs. run "slurpy <software> --help" for all submission options."""
+jobs. run "slurpy <task> --help" for all submission options."""
 
 
 class SlurpyError(Exception):
@@ -262,6 +265,7 @@ class SiteDefaults:
     max_cpus: int | None = None
     max_memory_gb: int | None = None
     max_array_size: int = 1000
+    record_limit: int = 100
 
 
 _DEFAULTS_INT_KEYS = (
@@ -273,6 +277,7 @@ _DEFAULTS_INT_KEYS = (
     "max_cpus",
     "max_memory_gb",
     "max_array_size",
+    "record_limit",
 )
 _DEFAULTS_STR_KEYS = ("partition", "scratch_base")
 _DEFAULTS_KEYS = _DEFAULTS_INT_KEYS + _DEFAULTS_STR_KEYS
@@ -347,6 +352,7 @@ def load_site_defaults(search_path: Sequence[Path]) -> SiteDefaults:
         max_cpus=optional_int("max_cpus"),
         max_memory_gb=optional_int("max_memory_gb"),
         max_array_size=int_value("max_array_size", fallback.max_array_size),
+        record_limit=int_value("record_limit", fallback.record_limit),
     )
 
 
@@ -1119,6 +1125,214 @@ def stage_injected_inputs(
     return dataclasses.replace(spec, inputs=tuple(staged_inputs))
 
 
+_JOB_FILE_INT_KEYS = {
+    "cpus": "cpus",
+    "memory": "memory",
+    "nodes": "nodes",
+    "ntasks": "ntasks",
+    "ntasks_per_node": "ntasks_per_node",
+    "throttle": "throttle",
+    "gpu": "gpu",
+}
+_JOB_FILE_STR_KEYS = {
+    "time": "time",
+    "partition": "partition",
+    "job_name": "job_name",
+    "account": "account",
+    "mail_type": "mail_type",
+    "mail_user": "mail_user",
+    "dependency": "dependency",
+    "launcher": "launcher",
+    "variant": "variant",
+    "args": "program_args",
+}
+_JOB_FILE_BOOL_KEYS = {
+    "no_archive": "no_archive",
+    "inject_resources": "inject_resources",
+}
+_JOB_FILE_KEYS = (
+    "task",
+    "input",
+    "paths",
+    *_JOB_FILE_INT_KEYS,
+    *_JOB_FILE_STR_KEYS,
+    *_JOB_FILE_BOOL_KEYS,
+)
+
+JOB_TEMPLATE = """\
+# slurpy job file. fill in what you need.
+# submit with: slurpy <task> -f thisfile.slpy
+# command-line flags override values given here.
+
+# task = "orca"                # errors if it does not match the command
+# cpus = 8
+# memory = 16                  # GB per node
+# nodes = 1
+# ntasks = 1
+# ntasks_per_node = 1
+# throttle = 5                 # max concurrent array tasks
+# time = "1-00:00:00"
+# partition = "chem"
+# job_name = "myjob"
+# gpu = 1
+# account = "myaccount"
+# mail_type = "END,FAIL"
+# mail_user = "me@example.com"
+# dependency = "afterok:12345"
+# launcher = "python3"         # exec-style tasks
+# variant = "dev"              # use <task>-dev.toml
+# args = "--opt --gfn 2"       # program arguments ({args} configs)
+# no_archive = true
+# inject_resources = true
+# input = ["a.xyz", "b.xyz"]   # relative to the location of this file
+
+# [paths]                      # same as --set key=value
+# mykey = "/path/to/thing"
+"""
+
+
+def _toml_string(value: str) -> str:
+    if "'" not in value:
+        return f"'{value}'"
+    escaped = value.replace("\\", "\\\\").replace('"', '\\"')
+    return f'"{escaped}"'
+
+
+def load_job_file(path: Path, args: argparse.Namespace) -> str | None:
+    """
+    Merge a job file into parsed arguments. The command line wins.
+
+    Input paths in the file resolve relative to the file's location.
+    Return the task recorded in the file, if any.
+    """
+    if not path.is_file():
+        raise SlurpyError(f"job file {path} not found. create one with slurpy template")
+    data = _load_toml(path)
+    _check_keys(data, _JOB_FILE_KEYS, "top level", path)
+    for key, dest in _JOB_FILE_INT_KEYS.items():
+        if key in data and getattr(args, dest) is None:
+            setattr(args, dest, _positive_int_value(data[key], key, "top level", path))
+    for key, dest in _JOB_FILE_STR_KEYS.items():
+        value = _get_str(data, key, "top level", path)
+        if value is not None and getattr(args, dest) is None:
+            setattr(args, dest, value)
+    for key, dest in _JOB_FILE_BOOL_KEYS.items():
+        if _get_bool(data, key, "top level", path, False) and not getattr(args, dest):
+            setattr(args, dest, True)
+    file_inputs = _get_str_list(data, "input", "top level", path)
+    if file_inputs and not args.inputs:
+        base = path.parent
+        args.inputs = [
+            text if os.path.isabs(text) else str(base / text) for text in file_inputs
+        ]
+    paths_table = _get_table(data, "paths", path)
+    file_overrides: list[str] = []
+    for key, path_value in paths_table.items():
+        if not isinstance(path_value, str):
+            raise SlurpyError(f'"{key}" in [paths] of {path} must be a string')
+        file_overrides.append(f"{key}={path_value}")
+    if file_overrides:
+        # command-line --set entries come later, so they win per key.
+        args.overrides = file_overrides + (args.overrides or [])
+    return _get_str(data, "task", "top level", path)
+
+
+def _job_record_text(
+    task: str,
+    args: argparse.Namespace,
+    spec: JobSpec,
+    original_inputs: Sequence[str],
+    comments: Sequence[str],
+) -> str:
+    """Render a rerunnable job file from the resolved submission."""
+    lines = [f"# {comment}" for comment in comments]
+    if lines:
+        lines.append("")
+    lines.append(f'task = "{task}"')
+    lines.append(f"cpus = {spec.cpus}")
+    lines.append(f"memory = {spec.memory_gb}")
+    lines.append(f"nodes = {spec.nodes}")
+    lines.append(f"ntasks = {spec.ntasks}")
+    if spec.ntasks_per_node is not None:
+        lines.append(f"ntasks_per_node = {spec.ntasks_per_node}")
+    lines.append(f"throttle = {spec.throttle}")
+    optional = (
+        ("time", spec.time_limit),
+        ("partition", spec.partition),
+        ("account", spec.account),
+        ("mail_type", spec.mail_type),
+        ("mail_user", spec.mail_user),
+        ("dependency", spec.dependency),
+        ("launcher", spec.launcher),
+        ("args", spec.program_args or None),
+    )
+    for key, value in optional:
+        if value:
+            lines.append(f"{key} = {_toml_string(value)}")
+    if spec.gpus is not None:
+        lines.append(f"gpu = {spec.gpus}")
+    if args.job_name:
+        lines.append(f"job_name = {_toml_string(args.job_name)}")
+    if args.no_archive:
+        lines.append("no_archive = true")
+    if args.inject_resources:
+        lines.append("inject_resources = true")
+    absolute = [str(Path(text).resolve()) for text in original_inputs]
+    joined = ", ".join(_toml_string(text) for text in absolute)
+    lines.append(f"input = [{joined}]")
+    if args.overrides:
+        lines += ["", "[paths]"]
+        for item in args.overrides:
+            key, _, value = item.partition("=")
+            lines.append(f"{key} = {_toml_string(value)}")
+    return "\n".join(lines) + "\n"
+
+
+def record_submission(
+    task: str,
+    args: argparse.Namespace,
+    spec: JobSpec,
+    original_inputs: Sequence[str],
+    site: SiteDefaults,
+    job_id: str,
+) -> Path:
+    """
+    Write the submission as a job file and return its path.
+
+    With --record the file is a commented, visible job file. Otherwise a
+    minimal record goes to output/.record/, oldest pruned at the limit.
+    """
+    now = datetime.datetime.now()
+    if args.record is not None:
+        comments = (
+            f"recorded by slurpy on {now.isoformat(timespec='seconds')}",
+            f"command: {' '.join(sys.argv)}",
+            f"job id: {job_id}",
+            f"rerun with: slurpy {task} -f <this file>",
+        )
+        if args.record:
+            path = Path(args.record).expanduser()
+        else:
+            name = f"slurpy-{task}-{spec.job_name}-c{spec.cpus}m{spec.memory_gb}"
+            if spec.partition:
+                name += f"p{spec.partition}"
+            path = Path(f"{name}.slpy")
+            if path.exists():
+                path = Path(f"{name}-{job_id}.slpy")
+        text = _job_record_text(task, args, spec, original_inputs, comments)
+    else:
+        record_dir = Path("output") / ".record"
+        record_dir.mkdir(parents=True, exist_ok=True)
+        existing = sorted(record_dir.glob("*.slpy"))
+        while len(existing) >= site.record_limit:
+            existing.pop(0).unlink()
+        stamp = now.strftime("%Y-%m-%d-%H-%M-%S")
+        path = record_dir / f"{stamp}-{job_id}.slpy"
+        text = _job_record_text(task, args, spec, original_inputs, ())
+    path.write_text(text)
+    return path
+
+
 def _next_backup_path(backup_dir: Path, name: str) -> Path:
     for index in range(1, MAX_BACKUP_INDEX + 1):
         candidate = backup_dir / f"{name}.bck{index:02d}"
@@ -1804,7 +2018,22 @@ def build_submit_parser(software_name: str) -> argparse.ArgumentParser:
         prog=f"slurpy {software_name}",
         description=f"submit {software_name} job(s) to slurm",
     )
-    parser.add_argument("inputs", nargs="+", metavar="input")
+    parser.add_argument("inputs", nargs="*", metavar="input")
+    parser.add_argument(
+        "-f",
+        "--file",
+        dest="job_file",
+        metavar="FILE",
+        help="job file with settings and inputs (see slurpy template)",
+    )
+    parser.add_argument(
+        "--record",
+        nargs="?",
+        const="",
+        default=None,
+        metavar="FILE",
+        help="write a rerunnable job file for this submission",
+    )
     parser.add_argument("-c", "--cpus", type=_positive_int)
     parser.add_argument("-m", "--memory", type=_positive_int, help="memory in GB")
     parser.add_argument("-N", "--nodes", type=_positive_int)
@@ -1827,7 +2056,9 @@ def build_submit_parser(software_name: str) -> argparse.ArgumentParser:
     parser.add_argument(
         "--launcher", help="program that runs the input (exec-style configs)"
     )
-    parser.add_argument("--variant", help="use software/<name>-<variant>.toml")
+    parser.add_argument(
+        "--variant", help="task variant, uses software/<name>-<variant>.toml"
+    )
     parser.add_argument(
         "--args",
         dest="program_args",
@@ -1866,12 +2097,12 @@ def _unknown_software_error(name: str, search_path: Sequence[Path]) -> SlurpyErr
     )
     if discovered:
         return SlurpyError(
-            f'unknown software "{name}". available: '
+            f'unknown task "{name}". available: '
             f"{', '.join(sorted(discovered))}. run \"slurpy list\" for "
             f"details. searched: {searched}"
         )
     return SlurpyError(
-        f'unknown software "{name}" and no software configs found at all. '
+        f'unknown task "{name}" and no task configs found at all. '
         f'searched: {searched}. run "slurpy init" to scaffold, then copy '
         "configs from the slurpy repo or your group's shared directory"
     )
@@ -1896,11 +2127,25 @@ def _submission_lock(output_dir: Path) -> Iterator[None]:
 def cmd_submit(software_name: str, argv: Sequence[str]) -> int:
     """Validate, render, and submit one job or one array."""
     args = build_submit_parser(software_name).parse_args(list(argv))
+    file_task = None
+    if args.job_file:
+        file_task = load_job_file(Path(args.job_file).expanduser(), args)
+    if not args.inputs:
+        raise SlurpyError(
+            "no inputs given. list input files on the command line or in "
+            "the job file"
+        )
     if args.variant:
         software_name = f"{software_name}-{args.variant}"
+    if file_task is not None and file_task != software_name:
+        raise SlurpyError(
+            f'the job file is for task "{file_task}" but "{software_name}" '
+            f'was invoked. use "slurpy {file_task} -f {args.job_file}" or '
+            "remove the task line"
+        )
     if not SOFTWARE_NAME_RE.fullmatch(software_name):
         raise SlurpyError(
-            f'invalid software name "{software_name}". use lowercase '
+            f'invalid task name "{software_name}". use lowercase '
             "letters, digits, hyphens, dots, and underscores"
         )
     search_path = resolve_search_path()
@@ -1920,6 +2165,7 @@ def cmd_submit(software_name: str, argv: Sequence[str]) -> int:
     else:
         inputs, stems = validate_inputs(args.inputs, software)
         secondaries = None
+    raw_inputs = list(args.inputs)
     spec = resolve_spec(args, software, site, inputs, secondaries, stems)
     if args.inject_resources:
         spec = stage_injected_inputs(spec, software, write=not args.dry_run)
@@ -1945,6 +2191,15 @@ def cmd_submit(software_name: str, argv: Sequence[str]) -> int:
         )
     else:
         print(f"submitted job {job_id} ({spec.job_name})")
+    try:
+        record_path = record_submission(
+            software_name, args, spec, raw_inputs, site, job_id
+        )
+        if args.record is not None:
+            print(f"recorded: {record_path}")
+    except OSError as error:
+        # the job is already submitted, a failed record only warns.
+        print(f"warning: could not write job record: {error}", file=sys.stderr)
     return 0
 
 
@@ -2008,13 +2263,13 @@ def cmd_list() -> int:
     if not discovered:
         print()
         print(
-            'no software configs found. run "slurpy init" to scaffold, '
+            'no task configs found. run "slurpy init" to scaffold, '
             "then copy configs from the slurpy repo or your group's "
             "shared directory"
         )
         return 0
     print()
-    print("available software:")
+    print("available tasks:")
     width = max(len(name) for name in discovered)
     for name in sorted(discovered):
         note = ""
@@ -2033,7 +2288,7 @@ def cmd_link(argv: Sequence[str]) -> int:
     parser.add_argument(
         "software",
         nargs="*",
-        help="software to link (default: all available, plus int and q)",
+        help="tasks to link (default: all available, plus int and q)",
     )
     parser.add_argument("--dir", default="~/bin", help="directory for the symlinks")
     args = parser.parse_args(list(argv))
@@ -2047,8 +2302,7 @@ def cmd_link(argv: Sequence[str]) -> int:
         names += ["int", "q"]
     if not names:
         raise SlurpyError(
-            'no software configs found to link. run "slurpy list" to see '
-            "the search path"
+            'no task configs found to link. run "slurpy list" to see ' "the search path"
         )
     for name in names:
         if name not in discovered and name not in ("int", "interactive", "q"):
@@ -2102,6 +2356,8 @@ scratch_base = "/scratch"
 # reject jobs above these limits before they reach slurm.
 # max_cpus = 64
 # max_memory_gb = 500
+# auto-recorded job files kept in output/.record/ before pruning.
+# record_limit = 100
 
 # partitions shown by "slurpy p", detected and kept current by
 # "slurpy p permission". all partitions when unset.
@@ -2249,6 +2505,25 @@ def cmd_init(argv: Sequence[str]) -> int:
     return 0
 
 
+def cmd_template(argv: Sequence[str]) -> int:
+    """Print or write a commented job file template."""
+    parser = argparse.ArgumentParser(
+        prog="slurpy template",
+        description="print or write a job file template",
+    )
+    parser.add_argument("file", nargs="?", metavar="FILE")
+    args = parser.parse_args(list(argv))
+    if args.file is None:
+        print(JOB_TEMPLATE, end="")
+        return 0
+    path = Path(args.file).expanduser()
+    if path.exists():
+        raise SlurpyError(f"{path} already exists, not overwriting it")
+    path.write_text(JOB_TEMPLATE)
+    print(f"created: {path}")
+    return 0
+
+
 def _command_from_program_name(program: str) -> str:
     """Map a symlink name to a command: sorca -> orca, sint -> int."""
     for prefix in ("submit-", "submit", "s"):
@@ -2288,6 +2563,8 @@ def run(argv: Sequence[str]) -> int:
         return cmd_link(rest)
     if command == "init":
         return cmd_init(rest)
+    if command == "template":
+        return cmd_template(rest)
     if command in ("q", "queue"):
         return cmd_queue("", rest)
     if command[0] == "q" and set(command[1:]) <= set(QUEUE_MODIFIERS):

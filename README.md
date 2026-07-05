@@ -47,7 +47,7 @@ slurpy fdmnes   [options] input.txt  [input2.txt ...]
 slurpy xtb      [options] mol.xyz    [mol2.xyz ...]
 slurpy exec     [options] script.sh  [script2.sh ...]
 slurpy int      [options]            # interactive shell on a compute node
-slurpy list                          # available software and config paths
+slurpy list                          # available tasks and config paths
 ```
 
 Dalton and DIRAC take paired inputs, calculation file first. One
@@ -97,10 +97,34 @@ Use `-h` for an overview of flags
                             of the input to match -c and -m
     --no-archive            skip the scratch archive
     --dry-run               print the script, do not submit
+-f, --file FILE             read settings and inputs from a job file
+    --record [FILE]         write a rerunnable job file for the submission
 ```
 
 Defaults come from the software config, then `slurpy.toml`, then built-in
 fallbacks.
+
+## Job files
+
+Any submission can be described in a plain TOML file, so a run is
+documented and rerunnable without remembering flags:
+
+```
+slurpy template job.slpy      # writes a commented template to fill in
+slurpy xtb -f job.slpy        # submit from it
+slurpy xtb -f job.slpy -c 16  # command line overrides the file
+```
+
+Keys are the long flag names (`cpus`, `memory`, `time`, `args`, ...),
+plus `task` (checked against the command), `input = [...]` (paths
+relative to the file's location), and a `[paths]` table matching
+`--set`. Precedence: command line, then the file, then configs.
+
+Every submission is also auto-recorded as a minimal job file in
+`output/.record/yyyy-mm-dd-hh-mm-ss-<jobid>.slpy` (oldest deleted beyond
+`record_limit`, default 100), so any previous run can be repeated with
+`-f`. Add `--record [FILE]` to write a visible, commented record instead
+(default name like `slurpy-orca-h2o-c8m16pchem.slpy`).
 
 `--inject-resources` makes the resource lines inside the input file
 (`%pal`/`%maxcore` for ORCA, `%nprocshared`/`%mem` for Gaussian) match
@@ -160,7 +184,7 @@ the whole list. Each directory can contain:
 
 ```
 slurpy.toml            site defaults: partition, cpus, memory, throttle, ...
-software/<name>.toml   one file per software (or flat <name>.toml)
+software/<name>.toml   one file per task (or flat <name>.toml)
 ```
 
 **`slurpy.toml`**, site-level settings:
@@ -177,6 +201,7 @@ throttle = 5
 scratch_base = "/scratch"
 max_cpus = 64            # optional guard rails
 max_array_size = 5000    # refuse larger submissions before slurm does
+record_limit = 100       # auto-recorded job files kept in output/.record/
 ```
 
 **`software/<name>.toml`**, the full software definition:
@@ -213,7 +238,7 @@ software needs goes in `setup`. See `configs/software/example.toml` for
 every key, including per-partition node exclusion under `[slurm]`. Check
 any config with `slurpy <name> --dry-run input` before submitting.
 
-## Shipped software configs
+## Shipped task configs
 
 **orca** - input `.inp`, output streams to `output/<stem>.out`. Runs from
 scratch; retrieves `.gbw`, `.xyz`; archives the scratch.

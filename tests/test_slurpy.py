@@ -180,7 +180,7 @@ class ValidationTests(TempCwdTestCase):
     def test_unknown_software(self) -> None:
         code, _, stderr = run_slurpy(["orcaa", "h2o.inp"])
         self.assertEqual(code, 1)
-        self.assertIn('unknown software "orcaa"', stderr)
+        self.assertIn('unknown task "orcaa"', stderr)
         self.assertIn("orca", stderr)
 
     def test_missing_input(self) -> None:
@@ -389,6 +389,145 @@ class InjectTests(TempCwdTestCase):
         code, _, stderr = self.submit_dry(["gpaw", "relax.py"])
         self.assertEqual(code, 1)
         self.assertIn("[inject] rules", stderr)
+
+
+class JobFileTests(TempCwdTestCase):
+    def _install_fake_sbatch(self) -> None:
+        bin_dir = Path("fakebin")
+        bin_dir.mkdir(exist_ok=True)
+        sbatch = bin_dir / "sbatch"
+        sbatch.write_text(
+            "#!/bin/bash\ncat > /dev/null\necho 'Submitted batch job 321'\n"
+        )
+        sbatch.chmod(0o755)
+        patcher = mock.patch.dict(
+            os.environ, {"PATH": f"{bin_dir.resolve()}:{os.environ['PATH']}"}
+        )
+        patcher.start()
+        self.addCleanup(patcher.stop)
+
+    def test_file_settings_applied(self) -> None:
+        self.touch("mol.xyz")
+        Path("job.slpy").write_text(
+            'cpus = 8\nmemory = 16\nargs = "--opt"\ninput = ["mol.xyz"]\n'
+        )
+        code, stdout, stderr = run_slurpy(["xtb", "-f", "job.slpy", "--dry-run"])
+        self.assertEqual(code, 0, stderr)
+        self.assertIn("--cpus-per-task=8", stdout)
+        self.assertIn("--mem=16gb", stdout)
+        self.assertIn('"$input" --opt >', stdout)
+
+    def test_cli_overrides_file(self) -> None:
+        self.touch("mol.xyz")
+        Path("job.slpy").write_text('cpus = 8\ninput = ["mol.xyz"]\n')
+        code, stdout, stderr = run_slurpy(
+            ["xtb", "-f", "job.slpy", "-c", "2", "--dry-run"]
+        )
+        self.assertEqual(code, 0, stderr)
+        self.assertIn("--cpus-per-task=2", stdout)
+
+    def test_file_inputs_relative_to_file(self) -> None:
+        self.touch("runs/mol.xyz")
+        Path("runs/job.slpy").write_text('input = ["mol.xyz"]\n')
+        code, stdout, stderr = run_slurpy(["xtb", "-f", "runs/job.slpy", "--dry-run"])
+        self.assertEqual(code, 0, stderr)
+        self.assertIn('input_path="runs/mol.xyz"', stdout)
+
+    def test_task_mismatch(self) -> None:
+        self.touch("mol.xyz")
+        Path("job.slpy").write_text('task = "orca"\ninput = ["mol.xyz"]\n')
+        code, _, stderr = run_slurpy(["xtb", "-f", "job.slpy", "--dry-run"])
+        self.assertEqual(code, 1)
+        self.assertIn('job file is for task "orca"', stderr)
+
+    def test_unknown_key(self) -> None:
+        self.touch("mol.xyz")
+        Path("job.slpy").write_text("cores = 8\n")
+        code, _, stderr = run_slurpy(["xtb", "mol.xyz", "-f", "job.slpy", "--dry-run"])
+        self.assertEqual(code, 1)
+        self.assertIn('"cores"', stderr)
+
+    def test_no_inputs_anywhere(self) -> None:
+        Path("job.slpy").write_text("cpus = 2\n")
+        code, _, stderr = run_slurpy(["xtb", "-f", "job.slpy", "--dry-run"])
+        self.assertEqual(code, 1)
+        self.assertIn("no inputs given", stderr)
+
+    def test_auto_record_written_and_rerunnable(self) -> None:
+        self._install_fake_sbatch()
+        self.touch("mol.xyz")
+        code, _, stderr = run_slurpy(["xtb", "mol.xyz", "-c", "4"])
+        self.assertEqual(code, 0, stderr)
+        records = list(Path("output/.record").glob("*-321.slpy"))
+        self.assertEqual(len(records), 1)
+        content = records[0].read_text()
+        self.assertNotIn("#", content)
+        self.assertIn('task = "xtb"', content)
+        self.assertIn("cpus = 4", content)
+        code, stdout, stderr = run_slurpy(["xtb", "-f", str(records[0]), "--dry-run"])
+        self.assertEqual(code, 0, stderr)
+        self.assertIn("--cpus-per-task=4", stdout)
+
+    def test_auto_record_prunes_oldest(self) -> None:
+        self._install_fake_sbatch()
+        config = Path("localconfig")
+        (config / "software").mkdir(parents=True)
+        (config / "slurpy.toml").write_text("[defaults]\nrecord_limit = 2\n")
+        (config / "software" / "exec.toml").write_text(
+            "[execution]\ncommand = 'bash \"{input}\"'\n"
+        )
+        record_dir = Path("output/.record")
+        record_dir.mkdir(parents=True)
+        (record_dir / "2000-01-01-00-00-00-1.slpy").write_text("")
+        (record_dir / "2000-01-02-00-00-00-2.slpy").write_text("")
+        self.touch("a.sh")
+        with mock.patch.dict(os.environ, {slurpy.CONFIG_PATH_ENV: str(config)}):
+            code, _, stderr = run_slurpy(["exec", "a.sh"])
+        self.assertEqual(code, 0, stderr)
+        names = sorted(p.name for p in record_dir.glob("*.slpy"))
+        self.assertEqual(len(names), 2)
+        self.assertNotIn("2000-01-01-00-00-00-1.slpy", names)
+
+    def test_visible_record_skips_auto(self) -> None:
+        self._install_fake_sbatch()
+        self.touch("mol.xyz")
+        code, stdout, stderr = run_slurpy(["xtb", "mol.xyz", "--record"])
+        self.assertEqual(code, 0, stderr)
+        self.assertFalse(Path("output/.record").exists())
+        visible = list(Path(".").glob("slurpy-xtb-mol-*.slpy"))
+        self.assertEqual(len(visible), 1)
+        content = visible[0].read_text()
+        self.assertIn("# recorded by slurpy", content)
+        self.assertIn("# job id: 321", content)
+
+    def test_record_to_named_file(self) -> None:
+        self._install_fake_sbatch()
+        self.touch("mol.xyz")
+        code, stdout, stderr = run_slurpy(["xtb", "mol.xyz", "--record", "myrun.slpy"])
+        self.assertEqual(code, 0, stderr)
+        self.assertIn("recorded: myrun.slpy", stdout)
+        self.assertIn('task = "xtb"', Path("myrun.slpy").read_text())
+
+
+class TemplateTests(TempCwdTestCase):
+    def test_stdout(self) -> None:
+        code, stdout, _ = run_slurpy(["template"])
+        self.assertEqual(code, 0)
+        self.assertIn("# cpus = 8", stdout)
+        self.assertIn("# input = [", stdout)
+
+    def test_write_and_refuse_overwrite(self) -> None:
+        code, _, stderr = run_slurpy(["template", "job.slpy"])
+        self.assertEqual(code, 0, stderr)
+        self.assertTrue(Path("job.slpy").is_file())
+        code, _, stderr = run_slurpy(["template", "job.slpy"])
+        self.assertEqual(code, 1)
+        self.assertIn("already exists", stderr)
+
+    def test_template_is_valid_toml(self) -> None:
+        import tomllib
+
+        self.assertEqual(tomllib.loads(slurpy.JOB_TEMPLATE), {})
 
 
 class ArgsFlagTests(TempCwdTestCase):
