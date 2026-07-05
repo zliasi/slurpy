@@ -673,6 +673,7 @@ class JobSpec:
     throttle: int
     cpus: int
     memory_gb: int
+    mem_per_cpu_gb: int | None
     ntasks: int
     nodes: int
     ntasks_per_node: int | None
@@ -705,7 +706,10 @@ def render_header(spec: JobSpec) -> list[str]:
     if spec.ntasks_per_node is not None:
         lines.append(f"#SBATCH --ntasks-per-node={spec.ntasks_per_node}")
     lines.append(f"#SBATCH --cpus-per-task={spec.cpus}")
-    lines.append(f"#SBATCH --mem={spec.memory_gb}gb")
+    if spec.mem_per_cpu_gb is not None:
+        lines.append(f"#SBATCH --mem-per-cpu={spec.mem_per_cpu_gb}gb")
+    else:
+        lines.append(f"#SBATCH --mem={spec.memory_gb}gb")
     if spec.gpus is not None:
         lines.append(f"#SBATCH --gpus={spec.gpus}")
     if spec.partition:
@@ -1012,7 +1016,12 @@ def resolve_spec(
             "MM, for example 1-00:00:00"
         )
     cpus = _resolve_int(args.cpus, software, "cpus", site.cpus)
-    memory_gb = _resolve_int(args.memory, software, "memory_gb", site.memory_gb)
+    mem_per_cpu_gb: int | None = args.mem_per_cpu
+    if mem_per_cpu_gb is not None:
+        # keep {memory_gb} and the limit checks meaningful for configs.
+        memory_gb = mem_per_cpu_gb * cpus
+    else:
+        memory_gb = _resolve_int(args.memory, software, "memory_gb", site.memory_gb)
     if site.max_cpus is not None and cpus > site.max_cpus:
         raise SlurpyError(
             f"requested {cpus} cpus but max_cpus is {site.max_cpus}. lower "
@@ -1063,6 +1072,7 @@ def resolve_spec(
         throttle=_resolve_int(args.throttle, software, "throttle", site.throttle),
         cpus=cpus,
         memory_gb=memory_gb,
+        mem_per_cpu_gb=mem_per_cpu_gb,
         ntasks=_resolve_int(args.ntasks, software, "ntasks", site.ntasks),
         nodes=_resolve_int(args.nodes, software, "nodes", site.nodes),
         ntasks_per_node=args.ntasks_per_node,
@@ -1162,6 +1172,7 @@ def stage_injected_inputs(
 _JOB_FILE_INT_KEYS = {
     "cpus": "cpus",
     "memory": "memory",
+    "mem_per_cpu": "mem_per_cpu",
     "nodes": "nodes",
     "ntasks": "ntasks",
     "ntasks_per_node": "ntasks_per_node",
@@ -1203,6 +1214,7 @@ JOB_TEMPLATE = """\
 # task = "orca"                # errors if it does not match the command
 # cpus = 8
 # memory = 16                  # GB per node
+# mem_per_cpu = 4              # GB per cpu, instead of memory
 # nodes = 1
 # ntasks = 1
 # ntasks_per_node = 1
@@ -1269,7 +1281,13 @@ def load_job_file(path: Path, args: argparse.Namespace) -> str | None:
         raise SlurpyError(f"job file {path} not found. create one with slurpy template")
     data = _load_toml(path)
     _check_keys(data, _JOB_FILE_KEYS, "top level", path)
+    if "memory" in data and "mem_per_cpu" in data:
+        raise SlurpyError(f"{path} sets both memory and mem_per_cpu. keep one")
     for key, dest in _JOB_FILE_INT_KEYS.items():
+        if key == "memory" and args.mem_per_cpu is not None:
+            continue
+        if key == "mem_per_cpu" and args.memory is not None:
+            continue
         if key in data and getattr(args, dest) is None:
             setattr(args, dest, _positive_int_value(data[key], key, "top level", path))
     for key, dest in _JOB_FILE_STR_KEYS.items():
@@ -1317,7 +1335,10 @@ def _job_record_text(
         lines.append("")
     lines.append(f'task = "{task}"')
     lines.append(f"cpus = {spec.cpus}")
-    lines.append(f"memory = {spec.memory_gb}")
+    if spec.mem_per_cpu_gb is not None:
+        lines.append(f"mem_per_cpu = {spec.mem_per_cpu_gb}")
+    else:
+        lines.append(f"memory = {spec.memory_gb}")
     lines.append(f"nodes = {spec.nodes}")
     lines.append(f"ntasks = {spec.ntasks}")
     if spec.ntasks_per_node is not None:
@@ -2130,7 +2151,16 @@ def build_submit_parser(software_name: str) -> argparse.ArgumentParser:
         help="write a rerunnable job file for this submission",
     )
     parser.add_argument("-c", "--cpus", type=_positive_int)
-    parser.add_argument("-m", "--memory", type=_positive_int, help="memory in GB")
+    memory_group = parser.add_mutually_exclusive_group()
+    memory_group.add_argument(
+        "-m", "--memory", type=_positive_int, help="memory in GB, per node"
+    )
+    memory_group.add_argument(
+        "--mem-per-cpu",
+        dest="mem_per_cpu",
+        type=_positive_int,
+        help="memory in GB per cpu, instead of -m",
+    )
     parser.add_argument("-N", "--nodes", type=_positive_int)
     parser.add_argument("-n", "--ntasks", type=_positive_int)
     parser.add_argument("--ntasks-per-node", type=_positive_int)
