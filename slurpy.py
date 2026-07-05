@@ -83,6 +83,19 @@ FINISHED_STATES = (
     "NODE_FAIL",
     "PREEMPTED",
 )
+# Time-window selectors: 3h/3hour, 2d/2day, 1w/1week, 6m/6month.
+WINDOW_RE = re.compile(r"(\d+)(h|hour|d|day|w|week|m|month)s?")
+_WINDOW_HOURS = {"h": 1, "hour": 1, "d": 24, "day": 24, "w": 168, "week": 168, "m": 720, "month": 720}
+# State filter keywords for hist and status.
+STATE_KEYWORDS = {
+    "failed": ("FAILED", "OUT_OF_MEMORY", "NODE_FAIL"),
+    "timeout": ("TIMEOUT",),
+    "cancelled": ("CANCELLED",),
+    "completed": ("COMPLETED",),
+}
+# Terminal failure states eligible for rerun files.
+RERUN_STATES = ("FAILED", "OUT_OF_MEMORY", "NODE_FAIL", "TIMEOUT")
+
 MODIFY_KEYS = {
     "throttle": "ArrayTaskThrottle",
     "nice": "Nice",
@@ -1930,10 +1943,10 @@ def _history_table(jobs: Sequence[FinishedJob], first_index: int) -> str:
     return "\n".join(lines) + "\n"
 
 
-def _history_summary(jobs: Sequence[FinishedJob], months: int) -> str:
+def _history_summary(jobs: Sequence[FinishedJob], window: str) -> str:
     total = len(jobs)
     if total == 0:
-        return f"no finished jobs in the last {months} month(s)\n"
+        return f"no finished jobs in the last {window}\n"
     completed = sum(1 for job in jobs if job.state.startswith("COMPLETED"))
     wall = sum(job.elapsed_seconds for job in jobs)
     cpu = sum(job.cpu_seconds for job in jobs)
@@ -1945,7 +1958,7 @@ def _history_summary(jobs: Sequence[FinishedJob], months: int) -> str:
         else 0.0
     )
     return (
-        f"usage over the last {months} month(s)\n"
+        f"usage over the last {window}\n"
         f"\n"
         f"jobs:          {total}\n"
         f"completed:     {completed} ({completed / total:.0%})\n"
@@ -1957,17 +1970,28 @@ def _history_summary(jobs: Sequence[FinishedJob], months: int) -> str:
     )
 
 
+def parse_window(token: str) -> datetime.timedelta | None:
+    """Parse a time-window selector like 3d or 2week, or return None."""
+    match = WINDOW_RE.fullmatch(token)
+    if match is None:
+        return None
+    amount = int(match.group(1))
+    if amount < 1:
+        raise SlurpyError(f'the window in "{token}" must be at least 1')
+    return datetime.timedelta(hours=amount * _WINDOW_HOURS[match.group(2)])
+
+
 def cmd_history(argv: Sequence[str]) -> int:
     """Show finished jobs, or a usage summary for a month window."""
     parser = argparse.ArgumentParser(
         prog="slurpy hist",
-        description="finished jobs: recent list, range, ids, or Xmonth "
-        "usage summary",
+        description="finished jobs: recent list, range, state filter, "
+        "ids, or a window usage summary",
     )
     parser.add_argument(
         "selectors",
         nargs="*",
-        metavar="N | A..B | Xmonth | ID|NAME",
+        metavar="N | A..B | Xd/Xw/Xm | failed|timeout|cancelled|completed | ID|NAME",
         help="1 is the newest finished job",
     )
     _add_record_flag(parser)
@@ -1976,12 +2000,14 @@ def cmd_history(argv: Sequence[str]) -> int:
     today = datetime.date.today()
     count: int | None = None
     job_range: tuple[int, int] | None = None
-    months: int | None = None
+    window: datetime.timedelta | None = None
+    window_token = ""
+    states: tuple[str, ...] = ()
     ids: list[str] = []
     names: list[str] = []
     for token in args.selectors:
         range_match = re.fullmatch(r"(\d+)\.\.(\d+)", token)
-        month_match = re.fullmatch(r"(\d+)month", token)
+        window_delta = parse_window(token)
         if range_match:
             job_range = (int(range_match.group(1)), int(range_match.group(2)))
             if job_range[0] < 1 or job_range[0] > job_range[1]:
@@ -1989,10 +2015,11 @@ def cmd_history(argv: Sequence[str]) -> int:
                     f'invalid range "{token}". use A..B with 1 <= A <= B, '
                     "1 is the newest job"
                 )
-        elif month_match:
-            months = int(month_match.group(1))
-            if months < 1:
-                raise SlurpyError("the month window must be at least 1")
+        elif window_delta is not None:
+            window = window_delta
+            window_token = token
+        elif token in STATE_KEYWORDS:
+            states = STATE_KEYWORDS[token]
         elif token.isdigit() and int(token) < HISTORY_COUNT_LIMIT:
             count = int(token)
             if count < 1:
@@ -2004,20 +2031,28 @@ def cmd_history(argv: Sequence[str]) -> int:
         else:
             names.append(token)
 
-    if months is not None:
-        since = today - datetime.timedelta(days=30 * months)
+    if window is not None and not (states or ids or names or count or job_range):
+        # a bare window gives the usage summary over that period.
+        since = today - window
         jobs = _fetch_history(since, [])
-        _deliver("history", _history_summary(jobs, months), args.record)
+        _deliver("history", _history_summary(jobs, window_token), args.record)
         return 0
 
-    since = today - datetime.timedelta(days=365)
+    since = today - (window if window is not None else datetime.timedelta(days=365))
     jobs = _fetch_history(since, ids)
     if names:
         wanted = set(names)
         jobs = [job for job in jobs if job.name in wanted]
+    if states:
+        jobs = [
+            job
+            for job in jobs
+            if any(job.state.startswith(state) for state in states)
+        ]
     first_index = 1
-    if ids or names:
-        pass
+    if ids or names or window is not None:
+        if count is not None:
+            jobs = jobs[:count]
     elif job_range is not None:
         start, stop = job_range
         jobs = jobs[start - 1 : stop]

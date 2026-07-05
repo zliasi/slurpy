@@ -227,6 +227,34 @@ class HistoryTests(CommandTestCase):
         self.assertIn("opt", stdout)
         self.assertNotIn("h2o", stdout)
 
+    def test_state_filter(self) -> None:
+        _, code, stdout, _ = self.run_with_mock(["hist", "failed"], SACCT_SAMPLE)
+        self.assertEqual(code, 0)
+        self.assertIn("opt", stdout)
+        self.assertNotIn("h2o", stdout)
+
+    def test_state_filter_with_count(self) -> None:
+        _, code, stdout, _ = self.run_with_mock(
+            ["hist", "completed", "1"], SACCT_SAMPLE
+        )
+        self.assertEqual(code, 0)
+        self.assertIn("h2o", stdout)
+        self.assertNotIn("opt", stdout)
+
+    def test_window_summary_units(self) -> None:
+        for token in ("2d", "1w", "1month", "24hour"):
+            _, code, stdout, _ = self.run_with_mock(["hist", token], SACCT_SAMPLE)
+            self.assertEqual(code, 0, token)
+            self.assertIn(f"usage over the last {token}", stdout)
+
+    def test_window_with_state_filters_table(self) -> None:
+        _, code, stdout, _ = self.run_with_mock(
+            ["hist", "1w", "failed"], SACCT_SAMPLE
+        )
+        self.assertEqual(code, 0)
+        self.assertIn("opt", stdout)
+        self.assertNotIn("usage over", stdout)
+
     def test_duration_parsing(self) -> None:
         self.assertEqual(slurpy._duration_seconds("1-01:00:00"), 90000)
         self.assertEqual(slurpy._duration_seconds("30:00"), 1800)
