@@ -124,6 +124,16 @@ GOLDEN_CASES: list[tuple[str, list[str], list[str]]] = [
         ["fdmnes", "input/CeS8_inp.txt", "--dry-run"],
         ["input/CeS8_inp.txt"],
     ),
+    (
+        "xtb-single-default",
+        ["xtb", "mol.xyz", "-c", "4", "--dry-run"],
+        ["mol.xyz"],
+    ),
+    (
+        "xtb-args",
+        ["xtb", "mol.xyz", "--args", "--opt --gfn 2 --chrg 1", "--dry-run"],
+        ["mol.xyz"],
+    ),
 ]
 
 
@@ -379,6 +389,24 @@ class InjectTests(TempCwdTestCase):
         code, _, stderr = self.submit_dry(["gpaw", "relax.py"])
         self.assertEqual(code, 1)
         self.assertIn("[inject] rules", stderr)
+
+
+class ArgsFlagTests(TempCwdTestCase):
+    def test_args_substituted(self) -> None:
+        self.touch("mol.xyz")
+        code, stdout, stderr = run_slurpy(
+            ["xtb", "mol.xyz", "--args", "--opt --chrg 1", "--dry-run"]
+        )
+        self.assertEqual(code, 0, stderr)
+        self.assertIn('"$input" --opt --chrg 1 >', stdout)
+
+    def test_args_rejected_without_placeholder(self) -> None:
+        self.touch("relax.py")
+        code, _, stderr = run_slurpy(
+            ["gpaw", "relax.py", "--args=--opt --tight", "--dry-run"]
+        )
+        self.assertEqual(code, 1)
+        self.assertIn("does not take --args", stderr)
 
 
 class SetFlagTests(TempCwdTestCase):

@@ -1,0 +1,19 @@
+# fixture xtb config for tests: {args} passthrough.
+
+[software]
+extensions = [".xyz", ".coord"]
+
+[paths]
+xtb = "/opt/xtb/bin/xtb"
+
+[environment]
+setup = """
+export OMP_NUM_THREADS={cpus}
+export OMP_STACKSIZE=4G
+ulimit -s unlimited
+"""
+
+[execution]
+command = '"{xtb}" "{input}" {args} > "{output_dir}/{stem}.out"'
+scratch = true
+archive = true

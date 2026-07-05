@@ -4,8 +4,9 @@
 
 - paired inputs via secondary_extensions, for dalton and dirac
 - new software configs: dalton, dalton-embedded, dirac, cfour, python,
-  fdmnes, fdmnes-serial
+  fdmnes, fdmnes-serial, xtb
 - --set key=value overrides [paths] values per submission
+- --args passes program arguments through the {args} placeholder (xtb)
 - --inject-resources rewrites cpu/memory directives in staged input copies
 - slurm commands: q/queue with stacking modifiers, p/partition with up and
   permission views, hist/history with ranges and monthly usage summaries,

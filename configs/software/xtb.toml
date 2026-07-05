@@ -1,0 +1,33 @@
+# xtb semi-empirical tight binding. set [paths] for your cluster.
+# usage: slurpy xtb molecule.xyz
+#        slurpy xtb molecule.xyz --args "--opt --gfn 2 --chrg 1"
+#        slurpy xtb *.xyz -T 10                (array)
+# method and job flags (--opt, --hess, --md, --chrg, --uhf, --gfn,
+# --alpb ...) are passed through with --args. xtb writes its result
+# files (xtbopt.xyz, charges, wbo, ...) into the working directory,
+# which the scratch archive captures.
+
+[software]
+extensions = [".xyz", ".coord"]
+
+[resources]
+cpus = 4
+memory_gb = 2
+
+[paths]
+xtb = "/path/to/xtb/bin/xtb"
+
+[environment]
+setup = """
+module purge
+export OMP_NUM_THREADS={cpus}
+export MKL_NUM_THREADS={cpus}
+# xtb needs a large stack for bigger systems.
+export OMP_STACKSIZE=4G
+ulimit -s unlimited
+"""
+
+[execution]
+command = '"{xtb}" "{input}" {args} > "{output_dir}/{stem}.out"'
+scratch = true
+archive = true

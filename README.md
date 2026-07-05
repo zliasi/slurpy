@@ -44,6 +44,7 @@ slurpy cfour    [options] input.inp  [input2.inp ...]
 slurpy dalton   [options] calc.dal geom.mol [geom2.mol ...]
 slurpy dirac    [options] calc.inp geom.mol [calc2.inp geom2.mol ...]
 slurpy fdmnes   [options] input.txt  [input2.txt ...]
+slurpy xtb      [options] mol.xyz    [mol2.xyz ...]
 slurpy exec     [options] script.sh  [script2.sh ...]
 slurpy int      [options]            # interactive shell on a compute node
 slurpy list                          # available software and config paths
@@ -89,6 +90,8 @@ Use `-h` for an overview of flags
     --dependency STR        slurm dependency, e.g. afterok:12345
     --launcher CMD          program that runs the input (exec-style configs)
     --variant NAME          software variant
+    --args STRING           extra program arguments, e.g. --args "--opt
+                            --gfn 2" (configs with an {args} placeholder)
     --set KEY=VALUE         override a [paths] value for this submission
     --inject-resources      rewrite cpu/memory directives in a staged copy
                             of the input to match -c and -m
@@ -233,6 +236,10 @@ a lock. Override the basis with `--set genbas=FILE`.
 
 **python** - input `.py`, sets `OMP_NUM_THREADS`. Copy to
 `python-<env>.toml` with an activation line for each environment.
+
+**xtb** - input `.xyz` / `.coord`, OpenMP threaded, method and job
+flags via `--args "--opt --gfn 2 --chrg 1"`. Result files are captured
+by the scratch archive.
 
 **fdmnes** - pass the calculation inputs (`.txt`), never the master
 `fdmfile.txt`. Each job mirrors the submission directory into scratch,

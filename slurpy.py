@@ -116,6 +116,7 @@ ENGINE_PLACEHOLDERS = frozenset(
         "nodes",
         "memory_gb",
         "launcher",
+        "args",
     }
 )
 
@@ -656,6 +657,7 @@ class JobSpec:
     exclude: str | None
     archive: bool
     launcher: str | None
+    program_args: str
 
 
 def manifest_name(job_name: str) -> str:
@@ -713,6 +715,7 @@ def _placeholder_values(spec: JobSpec, software: SoftwareConfig) -> dict[str, st
         values["secondary_path"] = "$secondary_path"
     if spec.launcher is not None:
         values["launcher"] = spec.launcher
+    values["args"] = spec.program_args
     values.update(software.paths)
     return values
 
@@ -1033,6 +1036,7 @@ def resolve_spec(
         exclude=resolve_exclude(software, partition),
         archive=software.archive and not args.no_archive,
         launcher=args.launcher or software.launcher,
+        program_args=args.program_args or "",
     )
 
 
@@ -1825,6 +1829,14 @@ def build_submit_parser(software_name: str) -> argparse.ArgumentParser:
     )
     parser.add_argument("--variant", help="use software/<name>-<variant>.toml")
     parser.add_argument(
+        "--args",
+        dest="program_args",
+        metavar="STRING",
+        help="extra arguments passed to the program via the {args} "
+        'placeholder. quote them: --args "--opt --gfn 2", and use '
+        '--args="--opt" for a single flag',
+    )
+    parser.add_argument(
         "--set",
         dest="overrides",
         action="append",
@@ -1898,6 +1910,11 @@ def cmd_submit(software_name: str, argv: Sequence[str]) -> int:
         raise _unknown_software_error(software_name, search_path)
     software = parse_software_config(config_path, software_name)
     software = apply_path_overrides(software, args.overrides)
+    if args.program_args and "{args}" not in software.command:
+        raise SlurpyError(
+            f"{software.name} does not take --args: its command in "
+            f"{software.source} has no {{args}} placeholder"
+        )
     if software.secondary_extensions:
         inputs, secondaries, stems = group_paired_inputs(args.inputs, software)
     else:
