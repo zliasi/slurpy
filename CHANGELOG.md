@@ -1,6 +1,6 @@
 # changelog
 
-## 0.2.0
+## 0.2.0 - 2026-07-06
 
 - paired inputs via secondary_extensions, for dalton and dirac
 - new software configs: dalton, dalton-embedded, dirac, cfour, python,
