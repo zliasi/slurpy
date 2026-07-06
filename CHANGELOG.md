@@ -2,7 +2,7 @@
 
 ## unreleased
 
-- new task configs: nwchem
+- new task configs: nwchem, psi4
 
 ## 0.2.0 - 2026-07-06
 

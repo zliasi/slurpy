@@ -1,0 +1,32 @@
+# psi4. usually installed in a conda environment, activate it in setup.
+# usage: slurpy psi4 job.dat -c 4 -m 8
+# psi4 threads with openmp (-n follows -c) and cleans its own scratch
+# files, which live under PSI_SCRATCH in the job's scratch directory.
+# with --inject-resources the memory line in a staged copy of the input
+# is made consistent with -m.
+
+[software]
+extensions = [".dat", ".in"]
+
+[resources]
+cpus = 4
+memory_gb = 8
+
+[environment]
+setup = """
+module purge
+# . "/path/to/miniconda3/etc/profile.d/conda.sh"
+# conda activate psi4
+export PSI_SCRATCH="{scratch}"
+"""
+
+[execution]
+command = 'psi4 -i "{input}" -o "{output_dir}/{stem}.out" -n {cpus}'
+scratch = true
+
+[inject]
+# psi4 memory is per job, leave headroom for the process itself.
+memory_fraction = 0.8
+rules = [
+  { match = '(?im)^\s*memory\s+.*$', write = 'memory {inject_memory_mb} mb' },
+]
