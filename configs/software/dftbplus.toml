@@ -1,0 +1,35 @@
+# dftb+ tight-binding dft. set [paths] for your cluster.
+# usage: slurpy dftbplus benzene.hsd
+#        slurpy dftbplus *.hsd -T 10          (array)
+# dftb+ reads a fixed-name dftb_in.hsd from its working directory and is
+# started without arguments, so each job mirrors the submission directory
+# into scratch (geometry files and slater-koster references keep
+# working), copies the input to the fixed name, runs, and copies new
+# files back to output/. keep per-calculation hsd files uniquely named,
+# never dftb_in.hsd itself.
+
+[software]
+extensions = [".hsd"]
+
+[resources]
+cpus = 4
+memory_gb = 4
+
+[paths]
+dftbplus = "/path/to/dftb+/bin/dftb+"
+
+[environment]
+setup = """
+module purge
+export OMP_NUM_THREADS={cpus}
+"""
+
+[execution]
+command = '''
+rm -f "$input"
+rsync -a --exclude=output --exclude=.slurpy-staged --exclude=dftb_in.hsd "$SLURM_SUBMIT_DIR/" .
+cp "$input_path" dftb_in.hsd
+"{dftbplus}" > "{output_dir}/{stem}.out"
+rsync -a --exclude=dftb_in.hsd --exclude=output "$PWD/" "{output_dir}/"
+'''
+scratch = true

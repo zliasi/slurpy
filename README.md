@@ -55,6 +55,7 @@ slurpy crest    [options] mol.xyz    [mol2.xyz ...]
 slurpy std2     [options] wfn.molden [wfn2.molden ...]
 slurpy nwchem   [options] job.nw     [job2.nw ...]
 slurpy psi4     [options] job.dat    [job2.dat ...]
+slurpy dftbplus [options] calc.hsd   [calc2.hsd ...]
 slurpy exec     [options] script.sh  [script2.sh ...]
 slurpy int      [options]            # interactive shell on a compute node
 slurpy list                          # available tasks and config paths
@@ -307,6 +308,10 @@ activated in setup. `--inject-resources` rewrites its `memory` line.
 
 **nwchem** - input `.nw`, MPI via `-n`. The `memory` directive stays in
 the input file (it is per mpi process).
+
+**dftbplus** - per-calculation `.hsd` files with unique names; the job
+mirrors the submission directory and feeds dftb+ its fixed-name
+`dftb_in.hsd`, like fdmnes.
 
 **fdmnes** - pass the calculation inputs (`.txt`), never the master
 `fdmfile.txt`. Each job mirrors the submission directory into scratch,
