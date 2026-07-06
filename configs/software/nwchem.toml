@@ -1,0 +1,26 @@
+# nwchem. set [paths] for your cluster.
+# usage: slurpy nwchem job.nw -n 8
+# nwchem takes its per-process heap from the memory directive inside the
+# input file, so set it there (it multiplies across mpi ranks).
+
+[software]
+extensions = [".nw"]
+
+[resources]
+ntasks = 8
+cpus = 1
+memory_gb = 16
+
+[paths]
+nwchem = "/path/to/nwchem/bin/nwchem"
+
+[environment]
+setup = """
+module purge
+# module load intel intelmpi (or source the oneapi setvars of the build)
+"""
+
+[execution]
+command = 'mpirun -np "$SLURM_NTASKS" "{nwchem}" "{input}" > "{output_dir}/{stem}.out"'
+scratch = true
+archive = true
