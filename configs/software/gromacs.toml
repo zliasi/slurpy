@@ -1,0 +1,28 @@
+# gromacs molecular dynamics. single-node thread build.
+# usage: slurpy gromacs topol.tpr -c 8
+#        slurpy gromacs topol.tpr --gpu 1 -p gpu-partition
+#        slurpy gromacs topol.tpr --args "-cpi topol.cpt"   (continue)
+# the portable .tpr from gmx grompp is the whole input. -deffnm names
+# every output after the stem, and mdrun auto-detects gpus from the
+# allocation. multi-node runs need the gmx_mpi build and a different
+# command, make a gromacs-mpi variant for that.
+
+[software]
+extensions = [".tpr"]
+
+[resources]
+cpus = 8
+memory_gb = 8
+
+[environment]
+setup = """
+module purge
+# module load gromacs
+export OMP_NUM_THREADS={cpus}
+"""
+
+[execution]
+# gmx logs to stderr, hence 2>&1.
+command = 'gmx mdrun -s "{input}" -deffnm "{stem}" -ntomp {cpus} {args} > "{output_dir}/{stem}.mdlog" 2>&1'
+scratch = true
+retrieve = ["log", "edr", "xtc", "trr", "gro", "cpt"]
