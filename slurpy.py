@@ -397,6 +397,7 @@ class SoftwareConfig:
     command: str
     extensions: tuple[str, ...]
     secondary_extensions: tuple[str, ...]
+    stem_mode: str
     setup: str
     scratch: bool
     archive: bool
@@ -462,7 +463,9 @@ def parse_software_config(path: Path, name: str) -> SoftwareConfig:
     _check_keys(data, _SOFTWARE_TABLES, "top level", path)
 
     software = _get_table(data, "software", path)
-    _check_keys(software, ("extensions", "secondary_extensions"), "[software]", path)
+    _check_keys(
+        software, ("extensions", "secondary_extensions", "stem"), "[software]", path
+    )
     extensions = tuple(
         ext if ext.startswith(".") else f".{ext}"
         for ext in _get_str_list(software, "extensions", "[software]", path)
@@ -480,6 +483,14 @@ def parse_software_config(path: Path, name: str) -> SoftwareConfig:
         raise SlurpyError(
             f"{path} lists the same extension in extensions and "
             "secondary_extensions. they must be distinct"
+        )
+    stem_mode = _get_str(software, "stem", "[software]", path) or "name"
+    if stem_mode not in ("name", "parent"):
+        raise SlurpyError(f'"stem" in [software] of {path} must be "name" or "parent"')
+    if stem_mode == "parent" and secondary_extensions:
+        raise SlurpyError(
+            f'{path} combines stem = "parent" with secondary_extensions. '
+            "paired inputs always take their stems from the file names"
         )
 
     execution = _get_table(data, "execution", path)
@@ -612,6 +623,7 @@ def parse_software_config(path: Path, name: str) -> SoftwareConfig:
         command=command,
         extensions=extensions,
         secondary_extensions=secondary_extensions,
+        stem_mode=stem_mode,
         setup=setup,
         scratch=scratch,
         archive=archive,
@@ -783,9 +795,12 @@ def render_body(
                 'input_path="$(sed -n "${SLURM_ARRAY_TASK_ID}p" '
                 f'"{manifest_name(spec.job_name)}")"'
             )
-            lines.append('stem="$(basename "$input_path")"')
-            if software.extensions:
-                lines.append('stem="${stem%.*}"')
+            if software.stem_mode == "parent":
+                lines.append('stem="$(basename "$(dirname "$input_path")")"')
+            else:
+                lines.append('stem="$(basename "$input_path")"')
+                if software.extensions:
+                    lines.append('stem="${stem%.*}"')
     else:
         lines.append(f'input_path="{spec.inputs[0]}"')
         if secondaries is not None:
@@ -871,8 +886,16 @@ def _record_stem(stem_sources: dict[str, str], stem: str, source: str) -> None:
     stem_sources[stem] = source
 
 
-def input_stem(text: str, extensions: tuple[str, ...]) -> str:
-    """Return the job stem: basename, minus a matched known extension."""
+def input_stem(text: str, extensions: tuple[str, ...], mode: str = "name") -> str:
+    """
+    Return the job stem.
+
+    Mode "name" takes the basename minus a matched known extension.
+    Mode "parent" takes the input's directory name, for tools whose
+    input file has the same fixed name in every calculation directory.
+    """
+    if mode == "parent":
+        return Path(text).parent.name
     name = Path(text).name
     suffix = Path(text).suffix
     if extensions and suffix in extensions:
@@ -901,7 +924,13 @@ def validate_inputs(
                 f'input "{text}" given more than once. check the file list'
             )
         seen.add(text)
-        stem = input_stem(text, software.extensions)
+        if software.stem_mode == "parent" and Path(text).parent.name in ("", "."):
+            raise SlurpyError(
+                f'"{text}" has no calculation directory, and {software.name} '
+                "names jobs after it. give the directory, e.g. "
+                f"calc1/{Path(text).name}"
+            )
+        stem = input_stem(text, software.extensions, software.stem_mode)
         _record_stem(stem_sources, stem, text)
         stems.append(stem)
     return tuple(raw_inputs), tuple(stems)
@@ -2866,6 +2895,10 @@ extensions = [".in"]
 # paired-input software (dalton, dirac) also takes geometry files, one
 # job per (calculation, geometry) pair, available as {secondary}.
 # secondary_extensions = [".mol"]
+# job stems come from the input filename ("name", default) or from the
+# input's directory ("parent", for tools like turbomole whose input has
+# the same fixed name in every calculation directory).
+# stem = "name"
 
 [resources]
 # defaults for this software, override the site defaults in slurpy.toml.

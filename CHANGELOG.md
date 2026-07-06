@@ -4,6 +4,7 @@
 
 - new task configs: nwchem, psi4, dftbplus, molpro, gromacs, qe, and a
   python-pyscf environment example
+- stem = "parent" config key names jobs after the calculation directory
 
 ## 0.2.0 - 2026-07-06
 

@@ -8,6 +8,10 @@ extensions = [".in"]
 # every job is then one (calculation, geometry) pair, and {secondary}
 # holds the geometry file in setup and command.
 # secondary_extensions = [".mol"]
+# job stems come from the input filename ("name", default) or from the
+# input's directory ("parent", for tools like turbomole whose input has
+# the same fixed name in every calculation directory).
+# stem = "name"
 
 [resources]
 # defaults for this software, override the site defaults in slurpy.toml.

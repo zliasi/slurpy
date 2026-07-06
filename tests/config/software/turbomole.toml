@@ -1,0 +1,22 @@
+# fixture turbomole config for tests: stem from the calc directory.
+
+[software]
+extensions = []
+stem = "parent"
+
+[paths]
+turbodir = "/opt/turbomole"
+
+[environment]
+setup = """
+export TURBODIR="{turbodir}"
+export PARA_ARCH=SMP
+export PARNODES={cpus}
+"""
+
+[execution]
+command = '''
+cd "$(dirname "$input_path")"
+ridft > "$SLURM_SUBMIT_DIR/output/{stem}.out" 2>&1
+'''
+scratch = false

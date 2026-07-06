@@ -130,6 +130,16 @@ GOLDEN_CASES: list[tuple[str, list[str], list[str]]] = [
         ["mol.xyz"],
     ),
     (
+        "turbomole-parent-single",
+        ["turbomole", "benzene/control", "--dry-run"],
+        ["benzene/control"],
+    ),
+    (
+        "turbomole-parent-array",
+        ["turbomole", "benzene/control", "naphthalene/control", "--dry-run"],
+        ["benzene/control", "naphthalene/control"],
+    ),
+    (
         "xtb-mem-per-cpu",
         ["xtb", "mol.xyz", "-c", "4", "--mem-per-cpu", "3", "--dry-run"],
         ["mol.xyz"],
@@ -527,6 +537,43 @@ class JobFileTests(TempCwdTestCase):
         self.assertEqual(code, 0, stderr)
         self.assertIn("recorded: myrun.slpy", stdout)
         self.assertIn('task = "xtb"', Path("myrun.slpy").read_text())
+
+
+class StemParentTests(TempCwdTestCase):
+    def test_stems_from_directories(self) -> None:
+        self.touch("benzene/control", "naphthalene/control")
+        code, stdout, stderr = run_slurpy(
+            ["turbomole", "benzene/control", "naphthalene/control", "--dry-run"]
+        )
+        self.assertEqual(code, 0, stderr)
+        self.assertIn("--job-name=benzene", stdout)
+        self.assertIn('stem="$(basename "$(dirname "$input_path")")"', stdout)
+
+    def test_bare_input_rejected(self) -> None:
+        self.touch("control")
+        code, _, stderr = run_slurpy(["turbomole", "control", "--dry-run"])
+        self.assertEqual(code, 1)
+        self.assertIn("has no calculation directory", stderr)
+
+    def test_same_directory_collides(self) -> None:
+        self.touch("benzene/control")
+        code, _, stderr = run_slurpy(
+            ["turbomole", "benzene/control", "benzene/control", "--dry-run"]
+        )
+        self.assertEqual(code, 1)
+        self.assertIn("more than once", stderr)
+
+    def test_invalid_stem_value(self) -> None:
+        config = Path("localconfig")
+        (config / "software").mkdir(parents=True)
+        (config / "software" / "bad.toml").write_text(
+            '[software]\nstem = "folder"\n[execution]\ncommand = "x"\n'
+        )
+        self.touch("a/control")
+        with mock.patch.dict(os.environ, {slurpy.CONFIG_PATH_ENV: str(config)}):
+            code, _, stderr = run_slurpy(["bad", "a/control", "--dry-run"])
+        self.assertEqual(code, 1)
+        self.assertIn('"name" or "parent"', stderr)
 
 
 class MemPerCpuTests(TempCwdTestCase):
