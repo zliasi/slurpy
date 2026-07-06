@@ -58,6 +58,7 @@ slurpy psi4     [options] job.dat    [job2.dat ...]
 slurpy dftbplus [options] calc.hsd   [calc2.hsd ...]
 slurpy molpro   [options] job.inp    [job2.inp ...]
 slurpy gromacs  [options] topol.tpr  [topol2.tpr ...]
+slurpy qe       [options] scf.in     [scf2.in ...]
 slurpy exec     [options] script.sh  [script2.sh ...]
 slurpy int      [options]            # interactive shell on a compute node
 slurpy list                          # available tasks and config paths
@@ -321,6 +322,9 @@ mirrors the submission directory and feeds dftb+ its fixed-name
 **gromacs** - input `.tpr` from `gmx grompp`; outputs named by
 `-deffnm {stem}` and retrieved, `--gpu 1` for gpu runs, restarts via
 `--args "-cpi stem.cpt"`.
+
+**qe** - quantum espresso pw.x under MPI, pseudopotential directory via
+`ESPRESSO_PSEUDO`; parallelization flags like `-nk` via `--args`.
 
 **fdmnes** - pass the calculation inputs (`.txt`), never the master
 `fdmfile.txt`. Each job mirrors the submission directory into scratch,

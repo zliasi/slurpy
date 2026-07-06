@@ -1,0 +1,33 @@
+# quantum espresso, pw.x. set [paths] for your cluster.
+# usage: slurpy qe scf.in -n 16
+#        slurpy qe scf.in --args "-nk 4"
+# pseudopotentials come from ESPRESSO_PSEUDO unless the input's
+# pseudo_dir says otherwise. outdir = './' in &CONTROL keeps the
+# wavefunctions in the job's scratch, which the archive captures.
+# other executables (ph.x, pp.x, dos.x) fit as variants, e.g. a
+# qe-ph.toml with the same shape.
+
+[software]
+extensions = [".in", ".pwi"]
+
+[resources]
+ntasks = 8
+cpus = 1
+memory_gb = 16
+
+[paths]
+pw = "/path/to/qe/bin/pw.x"
+pseudo_dir = "/path/to/pseudopotentials"
+
+[environment]
+setup = """
+module purge
+# module load quantum-espresso (or the build's mpi stack)
+export ESPRESSO_PSEUDO="{pseudo_dir}"
+export OMP_NUM_THREADS=1
+"""
+
+[execution]
+command = 'mpirun -np "$SLURM_NTASKS" "{pw}" -in "{input}" {args} > "{output_dir}/{stem}.out"'
+scratch = true
+archive = true
