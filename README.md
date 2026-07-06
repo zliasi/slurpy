@@ -59,6 +59,7 @@ slurpy dftbplus [options] calc.hsd   [calc2.hsd ...]
 slurpy molpro   [options] job.inp    [job2.inp ...]
 slurpy gromacs  [options] topol.tpr  [topol2.tpr ...]
 slurpy qe       [options] scf.in     [scf2.in ...]
+slurpy sharc    [options] traj.inp   [traj2.inp ...]
 slurpy exec     [options] script.sh  [script2.sh ...]
 slurpy int      [options]            # interactive shell on a compute node
 slurpy list                          # available tasks and config paths
@@ -327,6 +328,10 @@ mirrors the submission directory and feeds dftb+ its fixed-name
 
 **qe** - quantum espresso pw.x under MPI, pseudopotential directory via
 `ESPRESSO_PSEUDO`; parallelization flags like `-nk` via `--args`.
+
+**sharc** - trajectory `.inp` files beside their `INITCONDS` and `QM/`
+directory; the job feeds sharc.x its fixed-name `input` in scratch and
+prefixes the results with the trajectory stem.
 
 **fdmnes** - pass the calculation inputs (`.txt`), never the master
 `fdmfile.txt`. Each job mirrors the submission directory into scratch,

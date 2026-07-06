@@ -1,0 +1,50 @@
+# sharc surface hopping dynamics. set [paths] for your cluster.
+# usage: slurpy sharc traj_1.inp
+#        slurpy sharc traj_*.inp -T 10        (array)
+# trajectory inputs are uniquely named .inp files living next to their
+# INITCONDS file and QM/ directory. the job copies the .inp into scratch
+# under sharc's fixed name "input", brings the siblings along, runs
+# sharc.x, and copies output.dat, output.lis, and restart/ back with
+# stem prefixes. the full working directory lands in the archive.
+
+[software]
+extensions = [".inp"]
+
+[resources]
+cpus = 4
+memory_gb = 8
+
+[paths]
+sharc_home = "/path/to/sharc"
+
+[environment]
+setup = """
+module purge
+export SHARC="{sharc_home}/bin"
+export PATH="$SHARC:$PATH"
+export OMP_NUM_THREADS={cpus}
+"""
+
+[execution]
+command = '''
+input_dir="$SLURM_SUBMIT_DIR/$(dirname "$input_path")"
+cp "$input" input
+if [ -f "$input_dir/INITCONDS" ]; then
+  cp "$input_dir/INITCONDS" .
+fi
+if [ -d "$input_dir/QM" ]; then
+  cp -r "$input_dir/QM" .
+fi
+"$SHARC/sharc.x" input > "{output_dir}/{stem}.out" 2>&1
+if [ -f output.dat ]; then
+  cp output.dat "{output_dir}/{stem}-output.dat"
+fi
+if [ -f output.lis ]; then
+  cp output.lis "{output_dir}/{stem}-output.lis"
+fi
+if [ -d restart ]; then
+  cp -r restart "{output_dir}/{stem}-restart"
+fi
+'''
+scratch = true
+archive = true

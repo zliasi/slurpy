@@ -2,7 +2,8 @@
 
 ## unreleased
 
-- new task configs: nwchem, psi4, dftbplus, molpro, gromacs, qe, and a
+- new task configs: nwchem, psi4, dftbplus, molpro, gromacs, qe, sharc,
+  turbomole (+dscf/jobex variants), and a
   python-pyscf environment example
 - stem = "parent" config key names jobs after the calculation directory
 
