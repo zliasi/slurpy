@@ -290,7 +290,9 @@ memory capped at the fair share with 4/5 as working memory.
 a lock. Override the basis with `--set genbas=FILE`.
 
 **python** - input `.py`, sets `OMP_NUM_THREADS`. Copy to
-`python-<env>.toml` with an activation line for each environment.
+`python-<env>.toml` with an activation line for each environment;
+`python-pyscf.toml` ships as a ready example that also passes the memory
+allocation through `PYSCF_MAX_MEMORY`.
 
 **xtb** - input `.xyz` / `.coord`, OpenMP threaded, method and job
 flags via `--args "--opt --gfn 2 --chrg 1"`. Result files are captured

@@ -1,0 +1,24 @@
+# pyscf: a python library, not a binary, so this is just the python
+# pattern with the environment activated and memory passed through.
+# copy, point the activation at your pyscf environment, and run:
+#   slurpy python-pyscf calc.py -c 8 -m 16
+
+[software]
+extensions = [".py"]
+
+[resources]
+cpus = 4
+memory_gb = 8
+
+[environment]
+setup = """
+module purge
+# . "/path/to/miniconda3/etc/profile.d/conda.sh"
+# conda activate pyscf
+export OMP_NUM_THREADS={cpus}
+# pyscf reads its memory cap in MB from the environment.
+export PYSCF_MAX_MEMORY=$(( {memory_gb} * 1000 ))
+"""
+
+[execution]
+command = 'python3 "{input}"'

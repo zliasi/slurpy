@@ -2,7 +2,8 @@
 
 ## unreleased
 
-- new task configs: nwchem, psi4, dftbplus, molpro, gromacs, qe
+- new task configs: nwchem, psi4, dftbplus, molpro, gromacs, qe, and a
+  python-pyscf environment example
 
 ## 0.2.0 - 2026-07-06
 
