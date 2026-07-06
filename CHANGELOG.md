@@ -4,7 +4,7 @@
 
 - paired inputs via secondary_extensions, for dalton and dirac
 - new software configs: dalton, dalton-embedded, dirac, cfour, python,
-  fdmnes, fdmnes-serial, xtb
+  fdmnes, fdmnes-serial, xtb, crest, stda, std2, std2-xtb, censo
 - --set key=value overrides [paths] values per submission
 - --args passes program arguments through the {args} placeholder (xtb)
 - job files: slurpy <task> -f job.slpy, slurpy template, automatic

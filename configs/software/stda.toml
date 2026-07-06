@@ -1,0 +1,29 @@
+# stda simplified TD-DFT (grimme-lab, classic binary). molden input from
+# a preceding DFT calculation. see std2.toml for the maintained successor.
+# usage: slurpy stda wfn.molden --args "-ax 0.25 -e 7"
+
+[software]
+extensions = [".molden"]
+
+[resources]
+cpus = 4
+memory_gb = 4
+
+[paths]
+stda = "/path/to/stda/bin/stda"
+
+[environment]
+setup = """
+module purge
+export OMP_NUM_THREADS={cpus}
+export OMP_STACKSIZE=4G
+ulimit -s unlimited
+"""
+
+[execution]
+command = '''
+"{stda}" -f "{input}" -ax 0.25 -e 7.0 {args} > "{output_dir}/{stem}.out"
+cp tda.dat "{output_dir}/{stem}-tda.dat" 2>/dev/null || true
+'''
+scratch = true
+archive = true

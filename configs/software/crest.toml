@@ -1,0 +1,35 @@
+# crest conformer sampling (grimme-lab). set [paths] for your cluster.
+# usage: slurpy crest mol.xyz -c 8
+#        slurpy crest mol.xyz --args "--quick --alpb water --chrg 1"
+# crest defaults to GFN2-xTB, pick methods and modes with --args. the
+# best structure and the conformer ensemble are copied to output/, the
+# full working directory lands in the archive.
+
+[software]
+extensions = [".xyz", ".coord"]
+
+[resources]
+cpus = 8
+memory_gb = 8
+
+[paths]
+crest = "/path/to/crest"
+# crest drives the xtb binary, keep it on PATH.
+xtb_bin = "/path/to/xtb/bin"
+
+[environment]
+setup = """
+module purge
+export PATH="{xtb_bin}:$PATH"
+export OMP_STACKSIZE=4G
+ulimit -s unlimited
+"""
+
+[execution]
+command = '''
+"{crest}" "{input}" -T {cpus} {args} > "{output_dir}/{stem}.out"
+cp crest_best.xyz "{output_dir}/{stem}-best.xyz" 2>/dev/null || true
+cp crest_conformers.xyz "{output_dir}/{stem}-conformers.xyz" 2>/dev/null || true
+'''
+scratch = true
+archive = true

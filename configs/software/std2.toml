@@ -1,0 +1,36 @@
+# std2 simplified TD-DFT (grimme-lab, successor of stda). molden input
+# mode: bring a molden file from a preceding DFT calculation.
+# usage: slurpy std2 wfn.molden
+#        slurpy std2 wfn.molden --args "-ax 0.25 -e 10 -rpa"
+# -ax must match the functional's fock exchange (0.25 = PBE0). flags
+# given through --args come last and win.
+# for the xtb-based mode without a DFT wavefunction see std2-xtb.
+
+[software]
+extensions = [".molden"]
+
+[resources]
+cpus = 4
+memory_gb = 4
+
+[paths]
+std2 = "/path/to/std2/bin/std2"
+# some builds need a bundled libcint on the library path:
+# libcint_dir = "/path/to/libcint"
+
+[environment]
+setup = """
+module purge
+# export LD_LIBRARY_PATH="{libcint_dir}:$LD_LIBRARY_PATH"
+export OMP_NUM_THREADS={cpus}
+export OMP_STACKSIZE=4G
+ulimit -s unlimited
+"""
+
+[execution]
+command = '''
+"{std2}" -f "{input}" -ax 0.25 -e 7.0 {args} > "{output_dir}/{stem}.out"
+cp tda.dat "{output_dir}/{stem}-tda.dat" 2>/dev/null || true
+'''
+scratch = true
+archive = true

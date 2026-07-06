@@ -1,0 +1,29 @@
+# censo conformer ensemble refinement (grimme-lab). refines a crest
+# ensemble through DFT rungs, so it drives orca or turbomole underneath.
+# usage: slurpy censo crest_conformers.xyz -c 16
+#        slurpy censo crest_conformers.xyz --args "--solvent water"
+# censo reads its configuration from ~/.censo2rc (create with
+# "censo --new-config" and point it at your orca/turbomole install).
+
+[software]
+extensions = [".xyz"]
+
+[resources]
+cpus = 16
+memory_gb = 32
+
+[paths]
+censo = "/path/to/censo"
+
+[environment]
+setup = """
+module purge
+# make the QM engine censo drives available here, for example the
+# orca setup from your orca.toml.
+export OMP_NUM_THREADS=1
+"""
+
+[execution]
+command = '"{censo}" -i "{input}" --maxcores {cpus} {args} > "{output_dir}/{stem}.out"'
+scratch = true
+archive = true

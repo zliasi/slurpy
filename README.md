@@ -51,6 +51,8 @@ slurpy dalton   [options] calc.dal geom.mol [geom2.mol ...]
 slurpy dirac    [options] calc.inp geom.mol [calc2.inp geom2.mol ...]
 slurpy fdmnes   [options] input.txt  [input2.txt ...]
 slurpy xtb      [options] mol.xyz    [mol2.xyz ...]
+slurpy crest    [options] mol.xyz    [mol2.xyz ...]
+slurpy std2     [options] wfn.molden [wfn2.molden ...]
 slurpy exec     [options] script.sh  [script2.sh ...]
 slurpy int      [options]            # interactive shell on a compute node
 slurpy list                          # available tasks and config paths
@@ -287,6 +289,16 @@ a lock. Override the basis with `--set genbas=FILE`.
 **xtb** - input `.xyz` / `.coord`, OpenMP threaded, method and job
 flags via `--args "--opt --gfn 2 --chrg 1"`. Result files are captured
 by the scratch archive.
+
+**crest** - conformer sampling on a geometry, `-T` follows `-c`, modes
+and methods via `--args`; best structure and ensemble copied back.
+
+**stda / std2 / std2-xtb** - simplified TD-DFT spectra. `std2` takes a
+molden file from a DFT run, `std2-xtb` builds the wavefunction with
+xtb4stda from a bare geometry, `stda` is the classic binary.
+
+**censo** - refines a crest ensemble through DFT rungs, driving orca or
+turbomole via `~/.censo2rc`.
 
 **fdmnes** - pass the calculation inputs (`.txt`), never the master
 `fdmfile.txt`. Each job mirrors the submission directory into scratch,

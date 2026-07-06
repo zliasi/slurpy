@@ -181,6 +181,15 @@ class GoldenTests(TempCwdTestCase):
                 self.assertEqual(stdout, expected)
 
 
+class ShippedConfigTests(unittest.TestCase):
+    def test_all_shipped_configs_parse(self) -> None:
+        software_dir = TESTS_DIR.parent / "configs" / "software"
+        for path in sorted(software_dir.glob("*.toml")):
+            with self.subTest(config=path.name):
+                software = slurpy.parse_software_config(path, path.stem)
+                self.assertTrue(software.command)
+
+
 class ValidationTests(TempCwdTestCase):
     def test_unknown_software(self) -> None:
         code, _, stderr = run_slurpy(["orcaa", "h2o.inp"])
