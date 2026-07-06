@@ -60,6 +60,7 @@ slurpy molpro   [options] job.inp    [job2.inp ...]
 slurpy gromacs  [options] topol.tpr  [topol2.tpr ...]
 slurpy qe       [options] scf.in     [scf2.in ...]
 slurpy sharc    [options] traj.inp   [traj2.inp ...]
+slurpy turbomole [options] calc/control [calc2/control ...]
 slurpy exec     [options] script.sh  [script2.sh ...]
 slurpy int      [options]            # interactive shell on a compute node
 slurpy list                          # available tasks and config paths
@@ -332,6 +333,11 @@ mirrors the submission directory and feeds dftb+ its fixed-name
 **sharc** - trajectory `.inp` files beside their `INITCONDS` and `QM/`
 directory; the job feeds sharc.x its fixed-name `input` in scratch and
 prefixes the results with the trajectory stem.
+
+**turbomole** - licensed; give the `control` file of each prepared
+calculation directory, jobs are named after the directory
+(`stem = "parent"`) and run in place. `turbomole` is ridft,
+`turbomole-dscf` and `turbomole-jobex` the variants.
 
 **fdmnes** - pass the calculation inputs (`.txt`), never the master
 `fdmfile.txt`. Each job mirrors the submission directory into scratch,

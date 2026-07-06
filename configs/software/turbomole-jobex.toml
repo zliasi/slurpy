@@ -1,0 +1,35 @@
+# turbomole, jobex (licensed). set [paths] to your licensed install.
+# usage: slurpy turbomole-jobex benzene/control [naphthalene/control ...]
+# a turbomole calculation is a directory prepared with define, holding
+# control, coord, and basis files. the jobex optimization driver runs inside that directory
+# and jobs are named after it (stem = "parent"). results stay in the
+# calculation directory, stdout goes to output/<dir>.out.
+# jobex logs to job.last in the calculation directory.
+
+[software]
+extensions = []
+stem = "parent"
+
+[resources]
+cpus = 4
+memory_gb = 8
+
+[paths]
+turbodir = "/path/to/TURBOMOLE"
+
+[environment]
+setup = """
+module purge
+export TURBODIR="{turbodir}"
+source "$TURBODIR/Config_turbo_env"
+export PARA_ARCH=SMP
+export PARNODES={cpus}
+export OMP_NUM_THREADS={cpus}
+"""
+
+[execution]
+command = '''
+cd "$(dirname "$input_path")"
+jobex -ri -c 200 {args} > "$SLURM_SUBMIT_DIR/output/{stem}.out" 2>&1
+'''
+scratch = false
