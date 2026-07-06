@@ -56,6 +56,7 @@ slurpy std2     [options] wfn.molden [wfn2.molden ...]
 slurpy nwchem   [options] job.nw     [job2.nw ...]
 slurpy psi4     [options] job.dat    [job2.dat ...]
 slurpy dftbplus [options] calc.hsd   [calc2.hsd ...]
+slurpy molpro   [options] job.inp    [job2.inp ...]
 slurpy exec     [options] script.sh  [script2.sh ...]
 slurpy int      [options]            # interactive shell on a compute node
 slurpy list                          # available tasks and config paths
@@ -312,6 +313,9 @@ the input file (it is per mpi process).
 **dftbplus** - per-calculation `.hsd` files with unique names; the job
 mirrors the submission directory and feeds dftb+ its fixed-name
 `dftb_in.hsd`, like fdmnes.
+
+**molpro** - licensed; its driver self-launches MPI, so `-n` maps to
+`molpro -n` without an mpirun wrapper.
 
 **fdmnes** - pass the calculation inputs (`.txt`), never the master
 `fdmfile.txt`. Each job mirrors the submission directory into scratch,

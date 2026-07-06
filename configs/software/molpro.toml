@@ -1,0 +1,29 @@
+# molpro (licensed). set [paths] to your cluster's licensed install.
+# usage: slurpy molpro job.inp -n 8
+# the molpro driver launches its own mpi processes, so it is NOT wrapped
+# in mpirun: -n follows slurpy's -n. memory is set in the input (memory
+# card, per process).
+
+[software]
+extensions = [".inp", ".com"]
+
+[resources]
+ntasks = 4
+cpus = 1
+memory_gb = 8
+
+[paths]
+molpro = "/path/to/molpro/bin/molpro"
+
+[environment]
+setup = """
+module purge
+# module load intelmpi
+# some intelmpi setups need:
+# unset I_MPI_PMI_LIBRARY
+# export I_MPI_HYDRA_BOOTSTRAP=fork
+"""
+
+[execution]
+command = '"{molpro}" -n {ntasks} -d "{scratch}" -o "{output_dir}/{stem}.out" {args} "{input}"'
+scratch = true
