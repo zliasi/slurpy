@@ -15,13 +15,12 @@ memory_gb = 4
 
 [paths]
 std2 = "/path/to/std2/bin/std2"
-# some builds need a bundled libcint on the library path:
-# libcint_dir = "/path/to/libcint"
+# some builds need a bundled libcint on LD_LIBRARY_PATH. add a path here
+# and an export line in setup.
 
 [environment]
 setup = """
 module purge
-# export LD_LIBRARY_PATH="{libcint_dir}:$LD_LIBRARY_PATH"
 export OMP_NUM_THREADS={cpus}
 export OMP_STACKSIZE=4G
 ulimit -s unlimited

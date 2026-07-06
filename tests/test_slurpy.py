@@ -182,12 +182,18 @@ class GoldenTests(TempCwdTestCase):
 
 
 class ShippedConfigTests(unittest.TestCase):
-    def test_all_shipped_configs_parse(self) -> None:
+    def test_all_shipped_configs_parse_and_render(self) -> None:
         software_dir = TESTS_DIR.parent / "configs" / "software"
         for path in sorted(software_dir.glob("*.toml")):
             with self.subTest(config=path.name):
                 software = slurpy.parse_software_config(path, path.stem)
                 self.assertTrue(software.command)
+                values = {key: "x" for key in slurpy.ENGINE_PLACEHOLDERS}
+                values.update(software.paths)
+                # unknown placeholders in shipped configs must fail here,
+                # not on a user's first submission.
+                slurpy.substitute(software.setup, values, path.name)
+                slurpy.substitute(software.command, values, path.name)
 
 
 class ValidationTests(TempCwdTestCase):
