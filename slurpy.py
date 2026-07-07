@@ -157,6 +157,7 @@ slurpy {__version__}: submit computational chemistry jobs to slurm.
 submit:
   slurpy <task> [options] <input> [<input> ...]
   slurpy <task> -f job.slpy          settings and inputs from a job file
+  slurpy <task> -M inputs.txt        inputs from a manifest, one per line
   slurpy int [options]              interactive shell on a compute node
 
 slurm info (--record [FILE] writes the output to a file):
@@ -616,6 +617,12 @@ def parse_software_config(path: Path, name: str) -> SoftwareConfig:
                 f"invalid regex in [inject] rule of {path}: {error}"
             ) from error
         inject_rules.append((entry["match"], entry["write"]))
+    if stem_mode == "parent" and inject_rules:
+        raise SlurpyError(
+            f'{path} combines stem = "parent" with [inject] rules. '
+            "parent-stem inputs share one filename, so staged copies "
+            "would collide"
+        )
 
     return SoftwareConfig(
         name=name,
@@ -1078,8 +1085,9 @@ def resolve_spec(
             "max_array_size in slurpy.toml"
         )
 
+    dependency = args.dependency
     if args.after:
-        if args.dependency:
+        if dependency:
             raise SlurpyError("give either --after or --dependency, not both")
         after_ids = [part.strip() for part in args.after.split(",") if part.strip()]
         if not after_ids or not all(re.fullmatch(r"\d+", i) for i in after_ids):
@@ -1087,7 +1095,7 @@ def resolve_spec(
                 f'invalid --after "{args.after}". give numeric job ids, '
                 "comma separated"
             )
-        args.dependency = "afterok:" + ":".join(after_ids)
+        dependency = "afterok:" + ":".join(after_ids)
 
     partition = args.partition
     if partition is None:
@@ -1120,7 +1128,7 @@ def resolve_spec(
         account=args.account,
         mail_type=args.mail_type,
         mail_user=args.mail_user,
-        dependency=args.dependency,
+        dependency=dependency,
         exclude=resolve_exclude(software, partition),
         archive=software.archive and not args.no_archive,
         launcher=args.launcher or software.launcher,

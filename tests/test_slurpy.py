@@ -575,6 +575,21 @@ class StemParentTests(TempCwdTestCase):
         self.assertEqual(code, 1)
         self.assertIn('"name" or "parent"', stderr)
 
+    def test_parent_rejects_inject_rules(self) -> None:
+        config = Path("localconfig")
+        (config / "software").mkdir(parents=True)
+        (config / "software" / "bad.toml").write_text(
+            '[software]\nstem = "parent"\n[execution]\ncommand = "x"\n'
+            "[inject]\nrules = ["
+            "{ match = '^%mem', write = \"%mem {inject_memory_mb}\" }]\n"
+        )
+        self.touch("a/control")
+        with mock.patch.dict(os.environ, {slurpy.CONFIG_PATH_ENV: str(config)}):
+            code, _, stderr = run_slurpy(["bad", "a/control", "--dry-run"])
+        self.assertEqual(code, 1)
+        self.assertIn("[inject]", stderr)
+        self.assertIn("collide", stderr)
+
 
 class MemPerCpuTests(TempCwdTestCase):
     def test_mutually_exclusive_with_memory(self) -> None:

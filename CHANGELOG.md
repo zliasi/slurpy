@@ -6,6 +6,9 @@
   turbomole (+dscf/jobex variants), and a
   python-pyscf environment example
 - stem = "parent" config key names jobs after the calculation directory
+- configs combining stem = "parent" with [inject] rules are rejected at
+  parse time (staged copies of same-named inputs would collide)
+- help text lists -M/--manifest under submit
 
 ## 0.2.0 - 2026-07-06
 
